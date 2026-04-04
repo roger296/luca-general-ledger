@@ -4,18 +4,20 @@ services:
   # ── PostgreSQL (GL mirror database) ────────────────────────────────────────
   db:
     image: postgres:16-alpine
-    container_name: gl-mvp-db
+    container_name: luca-db
+    env_file: .env
     environment:
-      POSTGRES_DB: gl_ledger
-      POSTGRES_USER: gl_admin
-      POSTGRES_PASSWORD: gl_dev_password_change_me
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-gl_ledger}
+      POSTGRES_USER: ${POSTGRES_USER:-gl_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pg_data:/var/lib/postgresql/data
+    networks:
+      - luca_network
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gl_admin -d gl_ledger"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gl_admin} -d ${POSTGRES_DB:-gl_ledger}"]
+      interval: 10s
       timeout: 5s
       retries: 10
 
@@ -24,42 +26,34 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: gl-mvp-api
+    container_name: luca-api
+    env_file: .env
     environment:
       NODE_ENV: production
       PORT: 3000
-      DATABASE_URL: postgresql://gl_admin:gl_dev_password_change_me@db:5432/gl_ledger
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gl_admin}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-gl_ledger}
       CHAIN_DIR: /data/chains
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - chain_data:/data/chains
+      - ./logs:/app/logs
+    networks:
+      - luca_network
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: on-failure
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
-  # ── Test database (separate instance for integration tests) ─────────────────
-  db-test:
-    image: postgres:16-alpine
-    container_name: gl-mvp-db-test
-    environment:
-      POSTGRES_DB: gl_ledger_test
-      POSTGRES_USER: gl_admin
-      POSTGRES_PASSWORD: gl_test_password
-    ports:
-      - "5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gl_admin -d gl_ledger_test"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+networks:
+  luca_network:
+    driver: bridge
 
 volumes:
   pg_data:

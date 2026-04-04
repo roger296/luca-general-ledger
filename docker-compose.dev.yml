@@ -1,0 +1,31 @@
+# Development overrides — run with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+version: '3.8'
+
+services:
+  db:
+    ports:
+      - "5432:5432"   # Expose DB for local tools (TablePlus, DBeaver, etc.)
+
+  api:
+    ports:
+      - "3000:3000"   # Expose app directly (no nginx in dev)
+    environment:
+      NODE_ENV: development
+
+  # Test database for running integration tests
+  db-test:
+    image: postgres:16-alpine
+    container_name: luca-db-test
+    environment:
+      POSTGRES_DB: gl_ledger_test
+      POSTGRES_USER: gl_admin
+      POSTGRES_PASSWORD: gl_test_password
+    ports:
+      - "5433:5432"
+    networks:
+      - luca_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gl_admin -d gl_ledger_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
