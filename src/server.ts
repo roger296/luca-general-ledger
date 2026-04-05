@@ -86,6 +86,7 @@ app.use(
 app.use(cors());
 app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // needed for OAuth login form POST
 
 // ── Health check (no auth required — registered BEFORE apiRouter) ────────────
 const serverStartTime = Date.now();
