@@ -8,6 +8,7 @@ import { ChainWriter } from './chain/writer';
 import { ChainFileExistsError } from './chain/types';
 import { apiRouter } from './api/routes';
 import { oauthRouter, registerOAuthDiscovery } from './api/oauth';
+import { mcpRouter } from './mcp/server';
 import { errorHandler } from './api/middleware/errors';
 import { requestIdMiddleware } from './api/middleware/request-id';
 import { config } from './config';
@@ -126,6 +127,28 @@ app.get('/api/health', async (_req, res) => {
 // ── OAuth routes (public — no JWT middleware) ─────────────────────────────────
 registerOAuthDiscovery(app, config.baseUrl);
 app.use('/oauth', oauthRouter);
+
+// ── OAuth Protected Resource metadata (RFC 9728) ─────────────────────────────
+// Claude's MCP client fetches this to discover the authorization server.
+app.get('/.well-known/oauth-protected-resource', (_req, res) => {
+  res.json({
+    resource: config.baseUrl,
+    authorization_servers: [config.baseUrl],
+    bearer_methods_supported: ['header'],
+    scopes_supported: ['ledger:read', 'ledger:write'],
+  });
+});
+app.get('/.well-known/oauth-protected-resource/mcp', (_req, res) => {
+  res.json({
+    resource: `${config.baseUrl}/mcp`,
+    authorization_servers: [config.baseUrl],
+    bearer_methods_supported: ['header'],
+    scopes_supported: ['ledger:read', 'ledger:write'],
+  });
+});
+
+// ── MCP endpoint (authenticated via Bearer token, not JWT) ───────────────────
+app.use('/mcp', mcpRouter);
 
 // ── API routes ───────────────────────────────────────────────────────────────
 app.use('/api', apiRouter);
