@@ -130,6 +130,7 @@ oauthRouter.get('/authorize', async (req: Request, res: Response): Promise<void>
       code_challenge,
       code_challenge_method,
       scope,
+      resource,
     } = req.query as Record<string, string | undefined>;
 
     if (response_type !== 'code') {
@@ -168,6 +169,7 @@ oauthRouter.get('/authorize', async (req: Request, res: Response): Promise<void>
         ...(code_challenge ? { code_challenge } : {}),
         ...(code_challenge_method ? { code_challenge_method } : {}),
         ...(scope ? { scope } : {}),
+        ...(resource ? { resource } : {}),
       },
     }));
   } catch (err) {
@@ -182,7 +184,7 @@ const DUMMY_HASH = '$2b$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234
 
 /** Build the OAuth params object to pass back into the hidden form fields. */
 function oauthParams(body: Record<string, string | undefined>): Record<string, string> {
-  const { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope } = body;
+  const { client_id, redirect_uri, state, code_challenge, code_challenge_method, scope, resource } = body;
   return {
     ...(client_id ? { client_id } : {}),
     ...(redirect_uri ? { redirect_uri } : {}),
@@ -191,6 +193,7 @@ function oauthParams(body: Record<string, string | undefined>): Record<string, s
     ...(code_challenge ? { code_challenge } : {}),
     ...(code_challenge_method ? { code_challenge_method } : {}),
     ...(scope ? { scope } : {}),
+    ...(resource ? { resource } : {}),
   };
 }
 
@@ -261,8 +264,10 @@ oauthRouter.post('/authorize', async (req: Request, res: Response): Promise<void
 
     const callbackUrl = new URL(redirect_uri!);
     callbackUrl.searchParams.set('code', code);
+    callbackUrl.searchParams.set('iss', config.baseUrl); // RFC 9207 — required by MCP spec
     if (state) callbackUrl.searchParams.set('state', state);
 
+    console.log('[oauth] Redirecting to callback:', callbackUrl.toString());
     res.redirect(callbackUrl.toString());
 
   } catch (err) {
@@ -354,6 +359,8 @@ export function registerOAuthDiscovery(app: Express, baseUrl: string): void {
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code'],
       code_challenge_methods_supported: ['S256'],
+      token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+      authorization_response_iss_parameter_supported: true,
       scopes_supported: ['ledger:read', 'ledger:write'],
     });
   });
