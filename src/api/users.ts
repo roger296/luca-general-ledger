@@ -57,17 +57,19 @@ usersRouter.post('/', requirePermission('user:manage'), async (req: Request, res
   }
 });
 
-/** PUT /api/users/:id — update display_name, roles, is_active (admin only) */
+/** PUT /api/users/:id — update email, display_name, roles, is_active (admin only) */
 usersRouter.put('/:id', requirePermission('user:manage'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params as { id: string };
-    const { display_name, roles, is_active } = req.body as {
+    const { email, display_name, roles, is_active } = req.body as {
+      email?: string;
       display_name?: string;
       roles?: string[];
       is_active?: boolean;
     };
 
     const updates: Record<string, unknown> = {};
+    if (email !== undefined) updates['email'] = email;
     if (display_name !== undefined) updates['display_name'] = display_name;
     if (roles !== undefined) updates['roles'] = roles;
     if (is_active !== undefined) updates['is_active'] = is_active;
