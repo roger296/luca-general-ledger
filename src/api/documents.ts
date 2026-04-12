@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import fs from 'node:fs';
 import { Router } from 'express';
-import { getDocumentById, getDocumentsByTransactionId, getDocumentsByStagingId } from '../engine/document-inbox';
+import { getDocumentById, getDocumentsByTransactionId, getDocumentsByStagingId, uploadDocument } from '../engine/document-inbox';
 
 export const documentsRouter = Router();
 
@@ -26,6 +26,34 @@ documentsRouter.get(
       const docs = await getDocumentsByStagingId(req.params['stagingId']!);
       res.json({ success: true, data: docs });
     } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/** POST /api/documents/upload — upload and attach a document */
+documentsRouter.post(
+  '/upload',
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { filename, mime_type, file_data, transaction_id, staging_id } = req.body as Record<string, string | undefined>;
+
+      if (!filename || !mime_type || !file_data) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'filename, mime_type, and file_data are required' },
+        });
+        return;
+      }
+
+      const doc = await uploadDocument({ filename, mime_type, file_data, transaction_id, staging_id });
+      res.status(201).json({ success: true, data: doc });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('not found') || message.includes('exceeds') || message.includes('not valid base64')) {
+        res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message } });
+        return;
+      }
       next(err);
     }
   },

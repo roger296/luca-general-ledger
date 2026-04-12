@@ -42,7 +42,7 @@ COPY --from=builder /app/src/web/dist ./src/web/dist
 RUN npm install tsx typescript --save-dev
 
 # Create data directories
-RUN mkdir -p /data/chains /app/logs
+RUN mkdir -p /data/chains /data/documents /app/logs
 
 EXPOSE 3000
 

@@ -102,6 +102,36 @@ transactionsRouter.post('/bulk', requirePermission('transaction:post'), async (r
   }
 });
 
+/** POST /api/transactions/:id/documents — upload and attach a document to a transaction */
+transactionsRouter.post(
+  '/:id/documents',
+  requirePermission('transaction:post'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { uploadDocument } = await import('../engine/document-inbox');
+      const { filename, mime_type, file_data } = req.body as Record<string, string | undefined>;
+
+      if (!filename || !mime_type || !file_data) {
+        res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'filename, mime_type, and file_data are required' },
+        });
+        return;
+      }
+
+      const doc = await uploadDocument({ filename, mime_type, file_data, transaction_id: req.params['id'] });
+      res.status(201).json({ success: true, data: doc });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('not found') || message.includes('exceeds') || message.includes('not valid base64')) {
+        res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message } });
+        return;
+      }
+      next(err);
+    }
+  },
+);
+
 /** GET /api/transactions/:id/documents — documents linked to this transaction */
 transactionsRouter.get(
   '/:id/documents',

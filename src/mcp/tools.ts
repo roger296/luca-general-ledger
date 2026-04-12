@@ -1521,6 +1521,42 @@ export async function handleGetLatestBatchRun(args: Record<string, unknown>): Pr
 }
 
 // ---------------------------------------------------------------------------
+// gl_upload_document
+// ---------------------------------------------------------------------------
+
+export const uploadDocumentSchema = {
+  filename: z.string().describe('Original filename including extension, e.g. "invoice-INV-001.pdf"'),
+  mime_type: z.string().describe('MIME type of the file, e.g. "application/pdf", "image/jpeg"'),
+  file_data: z.string().describe('Base64-encoded file content'),
+  transaction_id: z.string().optional().describe('Transaction ID to link this document to, e.g. "TXN-2026-03-00004"'),
+  staging_id: z.string().optional().describe('Staging entry ID to link this document to'),
+};
+
+export async function handleUploadDocument(args: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const { uploadDocument } = await import('../engine/document-inbox');
+    const doc = await uploadDocument({
+      filename: args['filename'] as string,
+      mime_type: args['mime_type'] as string,
+      file_data: args['file_data'] as string,
+      transaction_id: args['transaction_id'] as string | undefined,
+      staging_id: args['staging_id'] as string | undefined,
+    });
+    return ok({
+      id: doc.id,
+      filename: doc.filename,
+      file_size: doc.file_size,
+      mime_type: doc.mime_type,
+      assigned_transaction_id: doc.assigned_transaction_id,
+      assigned_staging_id: doc.assigned_staging_id,
+      status: doc.status,
+    });
+  } catch (e) {
+    return wrapError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // registerTools — wire all tools into the MCP server
 // ---------------------------------------------------------------------------
 
@@ -1722,6 +1758,7 @@ export function registerTools(server: McpServer): void {
   server.tool('gl_complete_document_processing', 'Mark a document as successfully processed and record what was done with it.', completeDocumentProcessingSchema, handleCompleteDocumentProcessing);
   server.tool('gl_fail_document_processing', 'Mark a document as failed to process, recording the error message.', failDocumentProcessingSchema, handleFailDocumentProcessing);
   server.tool('gl_get_inbox_status', 'Get a summary of the inbox status: counts by status, watch directory, and active state.', getInboxStatusSchema, handleGetInboxStatus);
+  server.tool('gl_upload_document', 'Upload a base64-encoded document and attach it to a transaction or staging entry. Creates an inbox_documents record with status PROCESSED.', uploadDocumentSchema, handleUploadDocument);
   server.tool(
     'gl_get_setup_status',
     'Check whether the General Ledger has been configured: business profile, chart of accounts, opening balances, and current period.',

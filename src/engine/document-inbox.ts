@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { db } from '../db/connection';
+import { config } from '../config';
 
 export interface InboxDocument {
   id: string;
@@ -247,4 +249,76 @@ export async function getDocumentById(
   documentId: string,
 ): Promise<InboxDocument | undefined> {
   return db('inbox_documents').where('id', documentId).first();
+}
+
+const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
+
+/**
+ * Decode a base64 string, save the file to disk, and create an inbox_documents
+ * row with status PROCESSED. Optionally links to a transaction or staging entry.
+ */
+export async function uploadDocument(params: {
+  filename: string;
+  mime_type: string;
+  file_data: string; // base64-encoded
+  transaction_id?: string;
+  staging_id?: string;
+}): Promise<InboxDocument> {
+  const { filename, mime_type, file_data, transaction_id, staging_id } = params;
+
+  if (!filename) throw new Error('filename must not be empty');
+  if (!mime_type) throw new Error('mime_type must not be empty');
+
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(file_data, 'base64');
+  } catch {
+    throw new Error('file_data is not valid base64');
+  }
+
+  if (buffer.byteLength > MAX_FILE_SIZE_BYTES) {
+    throw new Error(
+      `File size ${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB exceeds the 25 MB limit`,
+    );
+  }
+
+  if (transaction_id) {
+    const txn = await db('transactions').where('transaction_id', transaction_id).first();
+    if (!txn) throw new Error(`Transaction ${transaction_id} not found`);
+  }
+
+  if (staging_id) {
+    const staging = await db('staging').where('staging_id', staging_id).first();
+    if (!staging) throw new Error(`Staging entry ${staging_id} not found`);
+  }
+
+  // Build the date-partitioned storage path
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const dir = path.join(config.documentStorageDir, today);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const uniqueId = crypto.randomUUID();
+  const safeFilename = path.basename(filename);
+  const filePath = path.join(dir, `${uniqueId}-${safeFilename}`);
+  fs.writeFileSync(filePath, buffer);
+
+  const now = new Date().toISOString();
+  const [row] = await db('inbox_documents')
+    .insert({
+      filename: safeFilename,
+      original_path: filePath,
+      mime_type,
+      file_size: buffer.byteLength,
+      status: 'PROCESSED',
+      document_type: null,
+      assigned_transaction_id: transaction_id ?? null,
+      assigned_staging_id: staging_id ?? null,
+      processing_notes: 'Uploaded via API',
+      processed_by: 'api-upload',
+      detected_at: now,
+      completed_at: now,
+    })
+    .returning('*');
+
+  return row as InboxDocument;
 }

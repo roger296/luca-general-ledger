@@ -8,6 +8,7 @@ export const config = {
   env,
   port: parseInt(process.env['PORT'] ?? '3000', 10),
   chainDir: process.env['CHAIN_DIR'] ?? 'chains/default',
+  documentStorageDir: process.env['DOCUMENT_STORAGE_DIR'] ?? 'data/documents',
   database: {
     url:
       env === 'test'

@@ -31,10 +31,12 @@ services:
       PORT: 3000
       DATABASE_URL: postgresql://${POSTGRES_USER:-gl_admin}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-gl_ledger}
       CHAIN_DIR: /data/chains
+      DOCUMENT_STORAGE_DIR: /data/documents
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - chain_data:/data/chains
+      - doc_data:/data/documents
       - ./logs:/app/logs
     networks:
       - luca_network
@@ -56,3 +58,4 @@ networks:
 volumes:
   pg_data:
   chain_data:
+  doc_data:
