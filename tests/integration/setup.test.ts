@@ -232,8 +232,14 @@ describe('postOpeningBalances', () => {
 // ---------------------------------------------------------------------------
 
 describe('getSetupStatus after posting', () => {
-  it('shows has_opening_balances true after posting', async () => {
+  it('shows opening_balances_pending_approval while staged, has_opening_balances still false', async () => {
+    // Opening-balances MANUAL_JOURNALs require manual approval. Until the
+    // staged entry is committed to the ledger (real transactions row), the
+    // ledger is effectively empty, so has_opening_balances must be false.
+    // The new opening_balances_pending_approval flag surfaces the pending
+    // staged entry so the UI can prompt "approve opening balances".
     const status = await getSetupStatus();
-    expect(status.has_opening_balances).toBe(true);
+    expect(status.has_opening_balances).toBe(false);
+    expect(status.opening_balances_pending_approval).toBe(true);
   });
 });

@@ -17,6 +17,12 @@ export interface SetupStatus {
   has_business_profile: boolean;
   has_chart_of_accounts: boolean;
   has_opening_balances: boolean;
+  /**
+   * True when an opening-balances entry is sitting in the staging table with
+   * status PENDING. Useful for the UI to distinguish "not yet entered" from
+   * "entered but waiting for approval". Does NOT imply the ledger is funded.
+   */
+  opening_balances_pending_approval: boolean;
   current_period: string | null;
 }
 
@@ -111,16 +117,25 @@ export async function getSetupStatus(): Promise<SetupStatus> {
   const accountCount = await db('accounts').count<[{ count: string }]>('code as count').first();
   const has_chart_of_accounts = parseInt(accountCount?.count ?? '0', 10) > 25;
 
-  // Check for opening balances transaction (committed or staged)
+  // Check for a committed opening-balances transaction. Only a row in the
+  // `transactions` table counts as "done" — a staging entry (PENDING or even
+  // APPROVED-but-uncommitted, from the old broken MCP approve handler) means
+  // the ledger is not yet funded and reports will show zero balances.
   const openingRow = await db('transactions')
     .where('reference', 'like', '%OPENING%')
     .first<{ transaction_id: string } | undefined>();
+  const has_opening_balances = Boolean(openingRow);
+
+  // Separately surface whether an opening-balances entry is sitting in the
+  // approval queue, so the UI can prompt "approve opening balances" rather
+  // than "enter opening balances".
   const openingStagedRow = openingRow
     ? null
     : await db('staging')
         .where('reference', 'like', '%OPENING%')
+        .where('status', 'PENDING')
         .first<{ staging_id: string } | undefined>();
-  const has_opening_balances = Boolean(openingRow) || Boolean(openingStagedRow);
+  const opening_balances_pending_approval = Boolean(openingStagedRow);
 
   // Get current open period
   const periodRow = await db('periods')
@@ -136,6 +151,7 @@ export async function getSetupStatus(): Promise<SetupStatus> {
     has_business_profile,
     has_chart_of_accounts,
     has_opening_balances,
+    opening_balances_pending_approval,
     current_period,
   };
 }
