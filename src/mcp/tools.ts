@@ -6,8 +6,9 @@
 import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { db } from '../db/connection';
-import { postTransaction } from '../engine/post';
+import { postTransaction, commitStagedTransaction } from '../engine/post';
 import type { CommittedResult, StagedResult, TransactionType } from '../engine/types';
+import { publishEvent } from '../engine/webhooks';
 
 // ---------------------------------------------------------------------------
 // Minimal McpServer interface (replace with @modelcontextprotocol/sdk when available)
@@ -366,16 +367,33 @@ export async function handleGetPeriodStatus(args: Record<string, unknown>): Prom
 
 export const approveTransactionSchema = {
   staging_id: z.string().describe('The staging ID of the pending transaction'),
+  approved_by: z
+    .string()
+    .optional()
+    .describe('Identity of the approver (defaults to "luca-agent")'),
 };
 
 export async function handleApproveTransaction(args: Record<string, unknown>): Promise<ToolResult> {
   try {
     const stagingId = args['staging_id'] as string;
-    const row = await db('staging').where('staging_id', stagingId).first<{ status: string } | undefined>();
-    if (!row) return errResult('NOT_FOUND', `Staging entry ${stagingId} not found`);
-    if (row.status !== 'PENDING') return errResult('INVALID_STATE', `Entry is ${row.status}, not PENDING`);
-    await db('staging').where('staging_id', stagingId).update({ status: 'APPROVED', reviewed_at: new Date().toISOString() });
-    return ok({ staging_id: stagingId, status: 'APPROVED' });
+    const approvedBy = (args['approved_by'] as string | undefined) ?? 'luca-agent';
+
+    // Delegate to the engine — writes to chain, mirrors to DB, marks staging
+    // APPROVED, sets committed_transaction_id, and updates cross-references.
+    const result = await commitStagedTransaction(stagingId, approvedBy);
+
+    // Notify external systems that a previously-staged item has been approved.
+    // commitStagedTransaction does NOT fire TRANSACTION_POSTED for approvals
+    // (that event is reserved for the auto-approve path inside postTransaction),
+    // so TRANSACTION_APPROVED is the canonical signal for this flow.
+    publishEvent('TRANSACTION_APPROVED', {
+      staging_id: stagingId,
+      transaction_id: result.transaction_id,
+      period_id: result.period_id,
+      approved_by: approvedBy,
+    });
+
+    return ok(result);
   } catch (e) {
     return wrapError(e);
   }
@@ -388,16 +406,99 @@ export async function handleApproveTransaction(args: Record<string, unknown>): P
 export const rejectTransactionSchema = {
   staging_id: z.string().describe('The staging ID of the pending transaction'),
   reason: z.string().describe('Reason for rejection'),
+  rejected_by: z
+    .string()
+    .optional()
+    .describe('Identity of the rejecter (defaults to "luca-agent")'),
 };
 
 export async function handleRejectTransaction(args: Record<string, unknown>): Promise<ToolResult> {
   try {
     const stagingId = args['staging_id'] as string;
-    const row = await db('staging').where('staging_id', stagingId).first<{ status: string } | undefined>();
+    const reason = args['reason'] as string;
+    const rejectedBy = (args['rejected_by'] as string | undefined) ?? 'luca-agent';
+
+    const row = await db('staging')
+      .where('staging_id', stagingId)
+      .first<{ status: string } | undefined>();
     if (!row) return errResult('NOT_FOUND', `Staging entry ${stagingId} not found`);
     if (row.status !== 'PENDING') return errResult('INVALID_STATE', `Entry is ${row.status}, not PENDING`);
-    await db('staging').where('staging_id', stagingId).update({ status: 'REJECTED', reviewed_at: new Date().toISOString(), rejection_reason: args['reason'] });
-    return ok({ staging_id: stagingId, status: 'REJECTED', rejection_reason: args['reason'] });
+
+    await db('staging').where('staging_id', stagingId).update({
+      status: 'REJECTED',
+      reviewed_at: new Date().toISOString(),
+      reviewed_by: rejectedBy,
+      rejection_reason: reason,
+    });
+
+    publishEvent('TRANSACTION_REJECTED', {
+      staging_id: stagingId,
+      reason,
+      rejected_by: rejectedBy,
+    });
+
+    return ok({
+      staging_id: stagingId,
+      status: 'REJECTED',
+      rejection_reason: reason,
+      rejected_by: rejectedBy,
+    });
+  } catch (e) {
+    return wrapError(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// gl_recover_orphaned_approvals
+// ---------------------------------------------------------------------------
+// Cleanup utility for the Bug 5a regression window: before the approve handler
+// was fixed, staging rows were marked APPROVED without a chain write, a
+// transactions/transaction_lines insert, or a committed_transaction_id.
+// This tool finds those rows and resets them to PENDING so they can be
+// re-approved through the now-correct flow.
+
+export const recoverOrphanedApprovalsSchema = {
+  dry_run: z
+    .boolean()
+    .optional()
+    .describe('If true, only report orphans without resetting them. Defaults to false.'),
+};
+
+export async function handleRecoverOrphanedApprovals(
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  try {
+    const dryRun = (args['dry_run'] as boolean | undefined) ?? false;
+
+    const orphans = await db('staging')
+      .where('status', 'APPROVED')
+      .whereNull('committed_transaction_id')
+      .select<
+        Array<{
+          staging_id: string;
+          period_id: string;
+          transaction_type: string;
+          reference: string | null;
+          description: string | null;
+        }>
+      >('staging_id', 'period_id', 'transaction_type', 'reference', 'description');
+
+    if (orphans.length === 0) {
+      return ok({ orphans_found: 0, orphans_reset: 0, orphans: [] });
+    }
+
+    if (dryRun) {
+      return ok({ orphans_found: orphans.length, orphans_reset: 0, orphans });
+    }
+
+    const ids = orphans.map((o) => o.staging_id);
+    const reset = await db('staging')
+      .whereIn('staging_id', ids)
+      .where('status', 'APPROVED')
+      .whereNull('committed_transaction_id')
+      .update({ status: 'PENDING', reviewed_at: null, reviewed_by: null });
+
+    return ok({ orphans_found: orphans.length, orphans_reset: reset, orphans });
   } catch (e) {
     return wrapError(e);
   }
@@ -1756,6 +1857,12 @@ export function registerTools(server: McpServer): void {
     'Reject a transaction pending in the approval queue.',
     rejectTransactionSchema,
     handleRejectTransaction,
+  );
+  server.tool(
+    'gl_recover_orphaned_approvals',
+    'Find staging entries marked APPROVED but never committed (legacy Bug 5a regression) and reset them to PENDING so they can be re-approved correctly.',
+    recoverOrphanedApprovalsSchema,
+    handleRecoverOrphanedApprovals,
   );
   server.tool(
     'gl_verify_chain',

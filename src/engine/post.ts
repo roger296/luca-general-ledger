@@ -387,9 +387,33 @@ export async function commitStagedTransaction(
     );
 
     // ── 4. Mark staging APPROVED ──────────────────────────────────────────
+    // Persist the committed_transaction_id so we can (a) detect orphaned
+    // approvals (APPROVED rows with null committed_transaction_id indicate
+    // the old broken MCP handler ran against them) and (b) maintain
+    // cross-reference integrity from other tables.
     await trx('staging')
       .where('staging_id', stagingId)
-      .update({ status: 'APPROVED', reviewed_at: new Date().toISOString(), reviewed_by: approvedBy });
+      .update({
+        status: 'APPROVED',
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: approvedBy,
+        committed_transaction_id: transactionId,
+      });
+
+    // ── 5. Fix up cross-references from other tables ─────────────────────
+    // When postTransaction returns a StagedResult, callers (e.g. bank
+    // reconciliation) store the STG- staging_id as their link. Once the
+    // staging entry is committed, rewrite those links to the real TXN- id
+    // so reports and drill-downs point at the committed transaction.
+    await trx('bank_statement_lines')
+      .where('matched_transaction_id', stagingId)
+      .update({ matched_transaction_id: transactionId });
+
+    // inbox_documents uses assigned_staging_id, which by design refers to
+    // the staging row (not the committed transaction), so it does NOT need
+    // to be rewritten here. The UI joins inbox_documents → staging →
+    // committed_transaction_id when a document needs to be linked to the
+    // final posting.
 
     return {
       status: 'COMMITTED',
