@@ -7,7 +7,7 @@ import { z } from 'zod';
 import Decimal from 'decimal.js';
 import { db } from '../db/connection';
 import { postTransaction, commitStagedTransaction } from '../engine/post';
-import type { CommittedResult, StagedResult, TransactionType } from '../engine/types';
+import type { CommittedResult, StagedResult, TaxCode, TransactionType } from '../engine/types';
 import { publishEvent } from '../engine/webhooks';
 
 // ---------------------------------------------------------------------------
@@ -1105,8 +1105,17 @@ export const bulkPostTransactionsSchema = {
 
 export async function handleBulkPostTransactions(args: Record<string, unknown>): Promise<ToolResult> {
   try {
-    // Defensively parse each transaction — callers may send stringified JSON
-    // items if the MCP client's schema serialisation flattens array items.
+    // Schema for individual posting lines — used to parse nested string items.
+    const lineSchema = z.object({
+      account_code: z.string(),
+      description: z.string(),
+      debit: z.number().default(0),
+      credit: z.number().default(0),
+    });
+
+    // Outer transaction schema. Note: `lines` is z.array(z.unknown()) here so
+    // that stringified-JSON line items survive the initial zod pass. We
+    // validate each line properly below with parseArrayItems.
     const txnSchema = z.object({
       transaction_type: z.string(),
       reference: z.string().optional(),
@@ -1114,16 +1123,7 @@ export async function handleBulkPostTransactions(args: Record<string, unknown>):
       description: z.string().optional(),
       amount: z.number().optional(),
       period_id: z.string(),
-      lines: z
-        .array(
-          z.object({
-            account_code: z.string(),
-            description: z.string(),
-            debit: z.number().default(0),
-            credit: z.number().default(0),
-          }),
-        )
-        .optional(),
+      lines: z.array(z.unknown()).optional(),
       counterparty: z
         .object({
           trading_account_id: z.string().optional(),
@@ -1131,9 +1131,25 @@ export async function handleBulkPostTransactions(args: Record<string, unknown>):
         })
         .optional(),
       idempotency_key: z.string().optional(),
+      account_code: z.string().optional(),
+      tax_code: z.string().optional(),
     });
-    const transactions = parseArrayItems(args['transactions'], txnSchema, 'transactions');
-    const stopOnError = (args['stop_on_error'] as boolean | undefined) ?? false;
+
+    // Phase 1: parse outer transactions (handles string→object per item).
+    const rawTransactions = parseArrayItems(args['transactions'], txnSchema, 'transactions');
+
+    // Phase 2: parse nested lines arrays (handles string→object per line item).
+    const transactions = rawTransactions.map((txn, i) => ({
+      ...txn,
+      lines: txn.lines
+        ? parseArrayItems(txn.lines, lineSchema, `transactions[${i}].lines`)
+        : undefined,
+    }));
+
+    const stopOnError =
+      typeof args['stop_on_error'] === 'string'
+        ? args['stop_on_error'] !== 'false'
+        : Boolean(args['stop_on_error'] ?? false);
 
     let posted = 0;
     let staged = 0;
@@ -1153,6 +1169,8 @@ export async function handleBulkPostTransactions(args: Record<string, unknown>):
           amount: txn.amount,
           idempotency_key: txn.idempotency_key,
           counterparty: txn.counterparty,
+          account_code: txn.account_code,
+          tax_code: txn.tax_code as TaxCode | undefined,
           lines: txn.lines?.map((l) => ({
             account_code: l.account_code,
             description: l.description,

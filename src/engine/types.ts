@@ -172,6 +172,8 @@ export interface StagedResult {
   staging_id: string;
   period_id: string;
   rule_name: string | null;
+  /** UTC timestamp after which this staging entry is eligible for auto-expiry. */
+  stale_after: string;
 }
 
 export type PostingResult = CommittedResult | StagedResult;

@@ -363,13 +363,22 @@ describe('validateSubmission', () => {
     ).not.toThrow();
   });
 
-  it('rejects tax_code on BANK_RECEIPT', () => {
+  it('accepts tax_code on BANK_RECEIPT (VAT control on bank receipts)', () => {
     expect(() =>
       validateSubmission({
         transaction_type: 'BANK_RECEIPT', date: '2026-03-15', period_id: '2026-03', amount: 250,
         tax_code: 'ZERO_RATED',
       }),
-    ).toThrow(ValidationError);
+    ).not.toThrow();
+  });
+
+  it('accepts tax_code on BANK_PAYMENT (VAT control on bank payments)', () => {
+    expect(() =>
+      validateSubmission({
+        transaction_type: 'BANK_PAYMENT', date: '2026-03-15', period_id: '2026-03', amount: 120,
+        tax_code: 'STANDARD_VAT_20',
+      }),
+    ).not.toThrow();
   });
 });
 

@@ -153,6 +153,11 @@ export async function postTransaction(
       // ── 5b. Stage for review ────────────────────────────────────────────
       const stagingId = generateStagingId();
 
+      // Default staging TTL: 72 hours. After this time the entry is eligible
+      // for automatic expiry (moved to EXPIRED status, idempotency key released).
+      const STAGING_TTL_HOURS = 72;
+      const staleAfter = new Date(Date.now() + STAGING_TTL_HOURS * 60 * 60 * 1000).toISOString();
+
       await trx('staging').insert({
         staging_id: stagingId,
         period_id: submission.period_id,
@@ -167,6 +172,7 @@ export async function postTransaction(
         idempotency_key: submission.idempotency_key ?? null,
         submitted_by: submission.submitted_by ?? null,
         approval_rule_id: decision.rule_id,
+        stale_after: staleAfter,
       });
 
       const result: StagedResult = {
@@ -174,6 +180,7 @@ export async function postTransaction(
         staging_id: stagingId,
         period_id: submission.period_id,
         rule_name: decision.rule_name,
+        stale_after: staleAfter,
       };
 
       publishEvent('TRANSACTION_STAGED', {
@@ -300,10 +307,25 @@ export async function commitStagedTransaction(
       }>();
 
     if (!stagingRow) {
-      throw new Error(`Staging entry ${stagingId} not found`);
+      throw Object.assign(
+        new Error(`Staging entry ${stagingId} not found`),
+        { code: 'NOT_FOUND' },
+      );
+    }
+    if (stagingRow.status === 'EXPIRED') {
+      throw Object.assign(
+        new Error(
+          `Staging entry ${stagingId} has expired. Submit a new transaction ` +
+          `(the idempotency key has been released and can be reused).`,
+        ),
+        { code: 'STAGING_EXPIRED' },
+      );
     }
     if (stagingRow.status !== 'PENDING') {
-      throw new Error(`Staging entry ${stagingId} is ${stagingRow.status}, not PENDING`);
+      throw Object.assign(
+        new Error(`Staging entry ${stagingId} is ${stagingRow.status}, not PENDING`),
+        { code: 'INVALID_STATE' },
+      );
     }
 
     const chainPayload =

@@ -43,10 +43,11 @@ const OVERRIDE_SUPPORTED_TYPES = new Set<string>([
   'BANK_RECEIPT', 'BANK_PAYMENT',
 ]);
 
-/** Amount-based types that support tax_code override (VAT-bearing invoice types only). */
+/** Amount-based types that support tax_code override (VAT treatment control). */
 const TAX_CODE_OVERRIDE_SUPPORTED_TYPES = new Set<string>([
   'CUSTOMER_INVOICE', 'SUPPLIER_INVOICE',
   'CUSTOMER_CREDIT_NOTE', 'SUPPLIER_CREDIT_NOTE',
+  'BANK_PAYMENT', 'BANK_RECEIPT',
 ]);
 
 /**
