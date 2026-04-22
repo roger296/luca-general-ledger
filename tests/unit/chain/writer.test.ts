@@ -134,7 +134,7 @@ describe('createPeriodFile', () => {
 
   it('creates the chain directory if it does not exist', async () => {
     const nestedDir = path.join(tmpDir, 'nested', 'chains', 'default');
-    const writer = new ChainWriter({ chainDir: nestedDir });
+    const writer = new ChainWriter({ chainDir: nestedDir, getPeriodStatus: () => Promise.resolve('OPEN') });
     await expect(
       writer.createPeriodFile('2026-03', null, EMPTY_BALANCES),
     ).resolves.toBeDefined();
