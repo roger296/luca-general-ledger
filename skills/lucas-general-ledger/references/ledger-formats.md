@@ -1,1078 +1,649 @@
-# General Ledger MCP Tool Reference
+# Luca's General Ledger — MCP API Reference
 
-This file documents all MCP tools available in the General Ledger system, including Phase 1 tools
-(core GL operations) and Phase 2 tools (extended capabilities).
-
----
-
-## Phase 1 — Core GL Tools
-
-### gl_post_transaction
-Submit a financial transaction to the General Ledger for posting.
-
-**Parameters:**
-- `transaction_type` (string, required) — e.g. `MANUAL_JOURNAL`, `CUSTOMER_INVOICE`, `SUPPLIER_INVOICE`, `CUSTOMER_PAYMENT`, `SUPPLIER_PAYMENT`, `PRIOR_PERIOD_ADJUSTMENT`
-- `description` (string, required) — human-readable description
-- `reference` (string, optional) — source document reference (invoice number, etc.)
-- `date` (string, required) — ISO 8601 date of the transaction
-- `currency` (string, optional) — default `GBP`
-- `lines` (array, required for MANUAL_JOURNAL) — each line: `{ account_code, debit, credit, description }`
-- `soft_close_override` (boolean, optional) — set `true` to post into a soft-closed period
-
-**Response:** `{ success: true, data: { transaction_id, status, lines } }`
+**Luca reads this file on every activation.**
+This is the complete reference for every MCP tool and resource available to Luca, the `business-profile.json` structure, the immutability constraint, file intake paths, and error handling behaviour.
 
 ---
 
-### gl_query_journal
-Search committed transactions in the General Ledger.
+## The Immutability Constraint
 
-**Parameters:**
-- `period_id` (string, optional) — filter by period, e.g. `"2026-03"`
-- `account_code` (string, optional) — filter by account
-- `transaction_type` (string, optional)
-- `date_from` / `date_to` (string, optional) — ISO 8601 date range
-- `limit` / `offset` (number, optional) — pagination
+> **This is the single most important architectural fact about Luca's General Ledger. Read it before every posting.**
 
-**Response:** `{ success: true, data: { transactions: [...], total } }`
+Every transaction posted to the ledger is permanently sealed by a cryptographic digital signature and recorded to an append-only hash chain. This means:
 
----
+- **Luca can never modify a posted transaction.** There is no edit function. There is no undo.
+- **Luca can never delete a posted transaction.** There is no delete function.
+- **All corrections are made by posting reversing entries.** If an invoice was posted incorrectly, Luca posts a matching reversal to zero it out, then posts the corrected entry. The original incorrect posting remains in the chain as part of the permanent audit trail — this is correct and expected.
+- **This is a feature, not a limitation.** The immutable chain satisfies accounting software regulations across multiple jurisdictions and provides a tamper-evident audit trail that cannot be altered after the fact.
 
-### gl_get_trial_balance
-Get the trial balance for a specific accounting period.
+**If a user asks Luca to "fix", "delete", "undo", or "remove" a posting, Luca's response is always to offer to post a reversing entry. Never suggest that a direct modification is possible.**
 
-**Parameters:**
-- `period_id` (string, required) — e.g. `"2026-03"` or `"current"`
-
-**Response:** `{ success: true, data: { period_id, accounts: [{ code, name, debit, credit }], total_debits, total_credits, balanced } }`
+Error correction workflow: see `references/workflows.md`, section "Error Correction".
 
 ---
 
-### gl_get_account_balance
-Get the current balance of a specific general ledger account.
+## MCP Architecture
 
-**Parameters:**
-- `account_code` (string, required)
-- `period_id` (string, optional)
+Luca's General Ledger exposes all ledger operations through an MCP (Model Context Protocol) server. Luca interacts with the ledger exclusively through this server — Luca never reads or writes chain files or database records directly.
 
-**Response:** `{ success: true, data: { account_code, name, type, debit_total, credit_total, net_balance } }`
+```
+Luca (Claude Cowork)
+        │
+        │ MCP / stdio / JSON-RPC
+        ▼
+┌─────────────────────┐
+│   MCP Server        │
+│   gl-ledger v1.0    │
+│   src/mcp/          │
+└──────────┬──────────┘
+           │ direct function calls (no HTTP hop)
+           ▼
+┌─────────────────────┐
+│   Engine Layer      │     ┌──────────────────┐
+│   posting.ts        │────►│  Chain Files      │
+│   approval.ts       │     │  (authority)      │
+│   periods.ts        │     └──────────────────┘
+│   reports.ts        │     ┌──────────────────┐
+└─────────────────────┘────►│  PostgreSQL       │
+                             │  (mirror DB)      │
+                             └──────────────────┘
+```
 
----
+The MCP server is a transport layer only. It contains no business logic — all validation, approval workflows, and audit trail generation happen in the engine layer, identical to REST API calls from the web UI.
 
-### gl_list_accounts
-List or search the chart of accounts.
+### Authentication
 
-**Parameters:**
-- `type` (string, optional) — `ASSET`, `LIABILITY`, `EQUITY`, `REVENUE`, `EXPENSE`
-- `active` (boolean, optional)
-- `search` (string, optional) — name/code search
+The MCP server authenticates via environment variables set at startup. Luca does not need to manage tokens or sessions. All transactions Luca submits are recorded in the audit trail with `source.module_id = 'mcp-agent'`, identifying them as AI-agent-originated.
 
-**Response:** `{ success: true, data: { accounts: [{ code, name, type, category, active }] } }`
-
----
-
-### gl_get_period_status
-Check the status of an accounting period.
-
-**Parameters:**
-- `period_id` (string, required)
-
-**Response:** `{ success: true, data: { period_id, status, start_date, end_date, data_flag } }`
-
----
-
-### gl_approve_transaction
-Approve a transaction pending in the approval queue.
-
-**Parameters:**
-- `staging_id` (string, required)
-- `approved_by` (string, required)
-- `notes` (string, optional)
-
-**Response:** `{ success: true, data: { transaction_id, status: 'COMMITTED' } }`
+Required environment variables (set by Luca's General Ledger at installation):
+- `MCP_USER_ID` — the user identity for audit trail purposes
+- `DATABASE_URL` — PostgreSQL connection string
+- `CHAIN_FILE_PATH` — path to chain file storage
 
 ---
 
-### gl_reject_transaction
-Reject a transaction pending in the approval queue.
+## MCP Tools
 
-**Parameters:**
-- `staging_id` (string, required)
-- `rejected_by` (string, required)
-- `reason` (string, required)
-
-**Response:** `{ success: true, data: { staging_id, status: 'REJECTED' } }`
+Luca has access to nine tools. Each is described with its purpose, required and optional parameters, expected responses, and error conditions.
 
 ---
 
-### gl_verify_chain
-Verify the integrity of the hash chain for a specific accounting period.
+### `gl_post_transaction`
 
-**Parameters:**
-- `period_id` (string, required)
+**Purpose:** Submit a financial transaction to the ledger. This is the primary tool for all bookkeeping work — invoices, payments, journals, adjustments, and all other postings.
 
-**Response:** `{ success: true, data: { valid: boolean, entries: number, error?: string } }`
+The transaction is validated by the engine, expanded into double-entry postings using the configured account mappings, and either:
+- **Auto-posted** immediately to the immutable chain if the approval rules are satisfied, or
+- **Staged for approval** and placed in the approval queue if the confidence score is below threshold or the amount exceeds the auto-approval limit.
+
+**Required parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `transaction_type` | string (enum) | The type of transaction. See Transaction Types section below for full catalogue. |
+| `reference` | string | The external reference — invoice number, payment reference, journal reference, etc. |
+| `date` | string (ISO 8601 date) | The accounting date. Determines which period the transaction falls in. Use the document date, not today's date. |
+| `description` | string | Human-readable description. Include counterparty name and document number. |
+| `lines` | array | Line items. See line item structure below. |
+| `idempotency_key` | string | A unique key to prevent duplicate postings on retry. Use format `[source]-[reference]`, e.g. `luca-INV-2026-00142`. Always generate this — it protects against double-posting if a call is retried. |
+
+**Optional parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `currency` | string (ISO 4217) | Defaults to the business's base currency (usually GBP). Required for foreign currency transactions. |
+| `exchange_rate` | string | Required when currency differs from base currency. Expressed as: 1 unit of transaction currency = X units of base currency. Example: if £1 = $1.27, then for a USD transaction, rate = 0.787 (1 USD = 0.787 GBP). |
+| `counterparty` | object | The supplier or customer. Include `trading_account_id` and/or `contact_id` if known. Required for invoice and payment types. |
+| `adjustment_context` | object | Required for `PRIOR_PERIOD_ADJUSTMENT` transactions. Includes `original_period`, `original_transaction_id`, `reason`, and `authorised_by`. |
+| `approval_context.confidence_score` | number (0.0–1.0) | Luca's confidence in this posting. Transactions below the business's configured threshold are staged for human approval rather than auto-posted. Always include this for batch-mode postings. |
+
+**Line item structure** (each item in the `lines` array):
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `description` | string | Yes | Description of this line item |
+| `net_amount` | number | Yes | Net amount before tax. Positive for normal entries. |
+| `tax_code` | string | Yes | Tax code. See Tax Codes section below. |
+| `tax_amount` | number | Yes | Tax amount. Zero if exempt or zero-rated. |
+| `account_override` | string | No | Override the default GL account for this line. Use `gl://accounts` resource to find valid codes. Required for MANUAL_JOURNAL lines. |
+| `cost_centre` | string | No | Cost centre code for departmental analysis. |
+| `department` | string | No | Department code. |
+
+**Transaction Types** (valid values for `transaction_type`):
+
+| Type | Use For |
+|---|---|
+| `CUSTOMER_INVOICE` | Recording a sale to a customer — debits Trade Debtors, credits Sales Revenue and VAT Output |
+| `CUSTOMER_CREDIT_NOTE` | Reducing a customer's balance — reverses a customer invoice |
+| `CUSTOMER_PAYMENT` | Recording receipt of payment from a customer — debits Bank, credits Trade Debtors |
+| `BAD_DEBT_WRITE_OFF` | Writing off an irrecoverable customer debt |
+| `SUPPLIER_INVOICE` | Recording a purchase invoice — debits expense account and VAT Input, credits Trade Creditors |
+| `SUPPLIER_CREDIT_NOTE` | Reducing an amount owed to a supplier — reverses a supplier invoice |
+| `SUPPLIER_PAYMENT` | Recording payment made to a supplier — debits Trade Creditors, credits Bank |
+| `STOCK_RECEIPT` | Recording goods received into stock |
+| `STOCK_DISPATCH` | Recording goods dispatched from stock |
+| `STOCK_WRITE_OFF` | Writing off damaged or obsolete stock |
+| `STOCK_TRANSFER` | Moving stock between locations |
+| `STOCK_REVALUATION` | Adjusting stock to a new valuation |
+| `BANK_RECEIPT` | Money received into bank that is not from a customer account — interest, refunds, ad hoc income |
+| `BANK_PAYMENT` | Money paid from bank that is not to a supplier account — bank charges, direct debits, utility payments |
+| `BANK_TRANSFER` | Moving money between the business's own bank accounts |
+| `MANUAL_JOURNAL` | Manual double-entry journal — accruals, prepayments, depreciation, corrections. All lines must balance (sum to zero). |
+| `PRIOR_PERIOD_ADJUSTMENT` | Correcting an entry in a prior period. Requires `adjustment_context`. |
+| `PERIOD_END_ACCRUAL` | Month-end or year-end accrual entry |
+| `PREPAYMENT_RECOGNITION` | Releasing a prepayment to the P&L |
+| `DEPRECIATION` | Recording depreciation of fixed assets |
+| `FX_REVALUATION` | Revaluing foreign currency balances at period end |
+
+**Tax Codes** (valid values for `tax_code`):
+
+| Code | Description |
+|---|---|
+| `STANDARD_VAT_20` | UK standard rate VAT at 20% |
+| `REDUCED_VAT_5` | UK reduced rate VAT at 5% |
+| `ZERO_RATED` | Zero-rated supply (VAT applicable but at 0%) |
+| `EXEMPT` | Exempt supply (outside VAT scope) |
+| `OUTSIDE_SCOPE` | Outside scope of VAT entirely |
+| `REVERSE_CHARGE` | Reverse charge mechanism (B2B cross-border services) |
+| `POSTPONED_VAT` | Postponed VAT Accounting for imports (UK) |
+
+**Successful response:**
+
+```json
+{
+  "status": "POSTED",
+  "transaction_id": "TXN-2026-03-00142",
+  "chain_hash": "a3f9e2...",
+  "period": "2026-03",
+  "posted_at": "2026-03-15T14:32:01Z",
+  "postings": [
+    { "account_code": "6400", "account_name": "Office Supplies", "debit": 100.00, "credit": 0 },
+    { "account_code": "1200", "account_name": "VAT Input Recoverable", "debit": 20.00, "credit": 0 },
+    { "account_code": "2000", "account_name": "Trade Creditors", "debit": 0, "credit": 120.00 }
+  ]
+}
+```
+
+**Staged for approval response:**
+
+```json
+{
+  "status": "PENDING_APPROVAL",
+  "staging_id": "STG-20260315-007",
+  "reason": "confidence_below_threshold",
+  "confidence_score": 0.71,
+  "threshold": 0.85
+}
+```
+
+When a transaction is staged, inform the user clearly. Do not proceed as if it has been posted.
 
 ---
 
-## Phase 2 — Extended Capabilities
+### `gl_query_journal`
+
+**Purpose:** Search committed transactions in the ledger. Use to retrieve specific invoices, payments, or to review recent activity. Results are from the committed chain — staged/pending transactions are not included.
+
+**Parameters** (all optional — omit to retrieve recent transactions):
+
+| Parameter | Type | Description |
+|---|---|---|
+| `period` | string | Filter to a specific accounting period, e.g. `2026-03` |
+| `date_from` | string (ISO date) | Start of date range |
+| `date_to` | string (ISO date) | End of date range |
+| `transaction_type` | string | Filter by transaction type |
+| `account_code` | string | Filter by account code — returns all transactions touching this account |
+| `counterparty` | string | Trading account ID or contact ID |
+| `reference` | string | Partial match search on the reference field |
+| `amount_min` | string | Minimum transaction amount |
+| `amount_max` | string | Maximum transaction amount |
+| `page` | number | Page number (default: 1) |
+| `page_size` | number | Results per page (default: 20) |
+
+**Response:** An array of matching transactions, each with `transaction_id`, `transaction_type`, `date`, `reference`, `description`, `total_amount`, `currency`, and a `postings` array showing the full double-entry breakdown.
 
 ---
 
-## Period Management
+### `gl_get_trial_balance`
 
-### `gl_open_period`
-
-**Purpose:** Open a new accounting period. Multiple periods can be open simultaneously — this is normal during month-end close when the previous month is still being finalised while the new month's operational transactions need to flow.
+**Purpose:** Retrieve the trial balance for an accounting period. Every account with a non-zero balance is shown with its debit and credit totals. Total debits must equal total credits — if they do not, the ledger has a data integrity problem that must be flagged immediately.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `period_id` | string | Yes | The period to open (YYYY-MM format, e.g. `2026-04`) |
+| `period` | string | Yes | Accounting period, e.g. `2026-03` |
+| `include_comparatives` | boolean | No | Include prior period figures for comparison. Default: false. |
 
-**Response:**
+**Response:** An account-by-account breakdown with debit totals, credit totals, and net balance for the period. Also includes a `data_flag` field — `PROVISIONAL` means the period is still open and figures may change; `AUTHORITATIVE` means the period is hard-closed and the figures are final.
 
-| Field | Description |
+**Important:** Always check the `data_flag`. When reporting figures to the user, state clearly whether they are provisional or final.
+
+---
+
+### `gl_get_account_balance`
+
+**Purpose:** Retrieve the current balance of a specific GL account. Use this for quick balance checks — e.g. checking the bank balance, the VAT liability, the trade debtors total.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `account_code` | string | Yes | Account code, e.g. `1100` for Trade Debtors |
+| `as_at_date` | string (ISO date) | No | Balance as at this date. Defaults to today. |
+
+**Response:** `debit_balance`, `credit_balance`, `net_balance`, `account_name`, `account_type`, and the date the balance is as at.
+
+---
+
+### `gl_list_accounts`
+
+**Purpose:** List or search the chart of accounts. Use this to find the correct account code before posting a transaction, particularly for expense categories or when in doubt about account classification.
+
+**Parameters** (all optional):
+
+| Parameter | Type | Description |
+|---|---|---|
+| `category` | string (enum) | Filter by category: `ASSET`, `LIABILITY`, `EQUITY`, `REVENUE`, `EXPENSE` |
+| `search` | string | Search by account name or code (partial match) |
+| `active_only` | boolean | Return only active accounts. Default: true. |
+
+**Response:** Array of accounts, each with `account_code`, `account_name`, `category`, `sub_category`, `is_active`, and `current_period_balance`.
+
+---
+
+### `gl_get_period_status`
+
+**Purpose:** Check the status and date range of an accounting period before posting. Always check this before posting to confirm the period is open. If no period is specified, returns the current open period.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `period` | string | No | Period to check, e.g. `2026-03`. Omit to get the current open period. |
+
+**Period statuses:**
+
+| Status | Meaning |
 |---|---|
-| `period_id` | The opened period |
-| `status` | Always `OPEN` |
-| `start_date` | First day of the month |
-| `end_date` | Last day of the month |
-| `opened_at` | Timestamp |
-| `is_new` | `true` if newly created, `false` if it already existed |
+| `OPEN` | Accepting all transactions normally |
+| `SOFT_CLOSE` | Period is being closed — only month-end adjustments permitted |
+| `HARD_CLOSE` | Period is permanently sealed — no further transactions permitted |
 
-**Errors:**
-- If the period exists and is `HARD_CLOSE`, returns an error — sealed periods cannot be reopened.
-- Invalid `period_id` format returns a validation error.
+**If the required period is `HARD_CLOSE`:** Do not post to it. Inform the user and ask whether they want to post to the current open period instead, or use a `PRIOR_PERIOD_ADJUSTMENT`.
 
 ---
 
-### gl_soft_close_period
-Transition an accounting period from OPEN to SOFT_CLOSE. After soft-close, all new transactions
-for this period require approval. The period's end date must have passed.
+### `gl_approve_transaction`
+
+**Purpose:** Approve a transaction currently in the approval queue. The transaction is committed to the immutable chain and the database mirror. If multiple approvals are required, this adds one vote.
 
 **Parameters:**
-- `period_id` (string, required) — e.g. `"2026-03"`
 
-**Example:**
-```json
-{
-  "period_id": "2026-03"
-}
-```
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `staging_id` | string | Yes | The staging ID of the pending transaction, e.g. `STG-20260315-007` |
+| `notes` | string | No | Optional notes to record with the approval |
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "period_id": "2026-03",
-    "status": "SOFT_CLOSE",
-    "soft_closed_at": "2026-04-01T09:00:00.000Z"
-  }
-}
-```
+**Response:** Confirmation that the approval was recorded, and either confirmation that the transaction is now `POSTED` (if all required approvals received) or that it remains `PENDING_APPROVAL` (if more approvals are needed).
+
+**Note:** Luca should not approve transactions in fully automated batch mode without user oversight. Approval via MCP is appropriate when the user has reviewed the staged transaction and explicitly asks Luca to approve it.
 
 ---
 
-### gl_hard_close_period
-Permanently seal an accounting period. Writes a PERIOD_CLOSE entry to the hash chain, seals
-the chain file as read-only, and opens the next period. The period must be SOFT_CLOSE with no
-pending approvals and a balanced trial balance. Sequential ordering is enforced — you cannot
-close March before February.
+### `gl_reject_transaction`
+
+**Purpose:** Reject a transaction in the approval queue. The transaction will not be posted. A reason is required and is stored in the audit trail.
 
 **Parameters:**
-- `period_id` (string, required) — e.g. `"2026-03"`
-- `closed_by` (string, required) — user identity performing the close
 
-**Example:**
-```json
-{
-  "period_id": "2026-03",
-  "closed_by": "finance.controller@company.com"
-}
-```
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `staging_id` | string | Yes | The staging ID of the pending transaction |
+| `reason` | string | Yes | Reason for rejection — stored in the audit trail |
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "period_id": "2026-03",
-    "status": "HARD_CLOSE",
-    "hard_closed_at": "2026-04-02T10:30:00.000Z",
-    "closing_chain_hash": "a1b2c3d4...(64-char hex)",
-    "next_period_id": "2026-04"
-  }
-}
-```
-
-**Errors to handle:**
-- `InvalidPeriodStateError` — period is not SOFT_CLOSE
-- `PeriodSequenceError` — previous period is not yet closed
-- `StagingNotClearError` — pending transactions remain
-- `TrialBalanceError` — debits do not equal credits
+**Response:** Confirmation that the transaction has been rejected and will not be posted.
 
 ---
 
-## Account Management
+### `gl_verify_chain`
 
-### gl_create_account
-Create a new account in the chart of accounts. Use standard numbering: 1xxx for assets, 2xxx
-for liabilities, 3xxx for equity, 4xxx for revenue, 5xxx-6xxx for expenses.
+**Purpose:** Verify the integrity of the hash chain for an accounting period. Checks that every entry's hash is correct and that the chain of hashes is unbroken from first to last entry. For hard-closed periods, also verifies the Merkle root against the stored period seal.
+
+Use this after a batch run, after a large number of postings, or any time the user wants confirmation that the ledger is intact.
 
 **Parameters:**
-- `code` (string, required) — unique account code, e.g. `"6250"`
-- `name` (string, required) — account name
-- `type` (string, required) — `ASSET` | `LIABILITY` | `EQUITY` | `REVENUE` | `EXPENSE`
-- `category` (string, optional) — e.g. `CURRENT_ASSET`, `OVERHEADS`, `DIRECT_COSTS`
 
-**Example:**
-```json
-{
-  "code": "6250",
-  "name": "Staff Training",
-  "type": "EXPENSE",
-  "category": "OVERHEADS"
-}
-```
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `period` | string | Yes | Period to verify, e.g. `2026-03` |
 
-**Response:** Created account row — `{ code, name, type, category, active: true, created_at }`
+**Response:** `VALID` or `INVALID`. If `INVALID`, includes the first entry where the hash check failed and a description of the discrepancy. An `INVALID` result is a serious data integrity problem — flag it to the user immediately and do not post further transactions until it is investigated.
 
 ---
 
-### gl_update_account
-Update an existing account in the chart of accounts. Can change name, category, or active status.
-Cannot change the account code or type.
+## MCP Resources
 
-**Parameters:**
-- `code` (string, required) — account to update
-- `name` (string, optional) — new name
-- `category` (string, optional) — new category
-- `active` (boolean, optional) — set `false` to deactivate
-
-**Example:**
-```json
-{
-  "code": "6250",
-  "name": "Staff Training and Development",
-  "active": true
-}
-```
-
-**Response:** Updated account row.
+Resources are read-only data Luca can request for context. They are prefetched before complex workflows to avoid repeated tool calls mid-process.
 
 ---
 
-## Query Tools
+### `gl://accounts`
 
-### gl_get_transaction
-Retrieve a single transaction by ID with all its posting lines.
+The complete chart of accounts with current-period balances. Read this at the start of any workflow that requires account selection — it is faster than calling `gl_list_accounts` repeatedly.
 
-**Parameters:**
-- `transaction_id` (string, required) — e.g. `"TXN-2026-03-00001"`
-
-**Example:**
-```json
-{
-  "transaction_id": "TXN-2026-03-00001"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "transaction_id": "TXN-2026-03-00001",
-    "transaction_type": "CUSTOMER_INVOICE",
-    "date": "2026-03-04",
-    "description": "Sale of widgets",
-    "status": "COMMITTED",
-    "lines": [
-      { "account_code": "1100", "debit": 1200.00, "credit": 0 },
-      { "account_code": "4000", "debit": 0, "credit": 1000.00 },
-      { "account_code": "2100", "debit": 0, "credit": 200.00 }
-    ]
-  }
-}
-```
+Returns a formatted table: account code, name, type, sub-category, and current balance (debit or credit).
 
 ---
 
-### gl_get_account_ledger
-Get all transactions hitting a specific account with a running balance. This is the detailed
-account ledger view.
+### `gl://periods`
 
-**Parameters:**
-- `account_code` (string, required) — e.g. `"1000"`
-- `period_id` (string, optional) — filter to a specific period
-- `date_from` (string, optional) — ISO 8601 date
-- `date_to` (string, optional) — ISO 8601 date
+Current and recent period information — the last six periods with their date ranges, status (`OPEN`, `SOFT_CLOSE`, `HARD_CLOSE`), and data flag (`PROVISIONAL` or `AUTHORITATIVE`).
 
-**Example:**
-```json
-{
-  "account_code": "1000",
-  "period_id": "2026-03"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "account_code": "1000",
-    "account_name": "Bank Current Account",
-    "entries": [
-      {
-        "transaction_id": "TXN-2026-03-00001",
-        "date": "2026-03-04",
-        "description": "...",
-        "debit": 0,
-        "credit": 500.00,
-        "running_balance": 14920.50
-      }
-    ],
-    "total_debits": 5000.00,
-    "total_credits": 3200.00,
-    "closing_balance": 1800.00
-  }
-}
-```
+Read this at the start of any reporting workflow to confirm which periods are available and what their data quality is.
 
 ---
 
-### gl_get_dashboard_summary
-Get key metrics for a morning briefing: current period, pending approvals, recent transactions,
-trial balance summary.
+### `gl://transaction-types`
 
-**Parameters:**
-- `period_id` (string, optional) — defaults to current open period
-
-**Example:**
-```json
-{
-  "period_id": "2026-04"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "current_period": { "period_id": "2026-04", "status": "OPEN" },
-    "pending_approvals": 3,
-    "recent_transactions": [...],
-    "trial_balance_totals": {
-      "total_debits": 145200.00,
-      "total_credits": 145200.00,
-      "balanced": true
-    }
-  }
-}
-```
+Full catalogue of transaction types with descriptions, required fields, and the default account mappings the engine uses when auto-generating the double-entry. Read this when unsure which transaction type to use for an unusual business event.
 
 ---
 
-### gl_bulk_post_transactions
-Post multiple transactions in a single call. Useful for migration, month-end batch processing,
-and importing data from other systems.
+### `gl://approval-queue`
 
-**Parameters:**
-- `transactions` (array, required) — array of transaction objects (same shape as `gl_post_transaction`)
-- `stop_on_error` (boolean, optional) — default `false`; if `true`, stops at first failure
+Transactions currently pending approval — count, total value, and a summary of each pending item (staging ID, type, amount, description, confidence score, how long it has been waiting).
 
-**Example:**
-```json
-{
-  "transactions": [
-    { "transaction_type": "CUSTOMER_INVOICE", "date": "2026-04-01", "description": "...", "lines": [...] },
-    { "transaction_type": "SUPPLIER_INVOICE", "date": "2026-04-01", "description": "...", "lines": [...] }
-  ],
-  "stop_on_error": false
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "total": 2,
-    "posted": 2,
-    "staged": 0,
-    "errors": 0,
-    "results": [
-      { "index": 0, "transaction_id": "TXN-2026-04-00001", "status": "COMMITTED" },
-      { "index": 1, "transaction_id": "TXN-2026-04-00002", "status": "PENDING" }
-    ]
-  }
-}
-```
+Read this at the start of any session to check for items needing attention, and always in batch mode to include in the morning summary.
 
 ---
 
-## Bank Reconciliation Tools
+## Error Handling
 
-### gl_register_bank_account
-Register a bank account and link it to a GL account code. This enables bank statement import
-and reconciliation for that account.
+All MCP tool calls may return errors. Luca must handle each error type gracefully and never silently skip a failed posting.
 
-**Parameters:**
-- `id` (string, required) — unique identifier for the bank account, e.g. `"BANK-001"`
-- `account_code` (string, required) — the GL account to link to, e.g. `"1000"`
-- `bank_name` (string, required) — e.g. `"Barclays"`
-- `account_name` (string, required) — e.g. `"Business Current Account"`
-- `sort_code` (string, optional) — e.g. `"20-00-00"`
-- `account_number` (string, optional) — e.g. `"12345678"`
-- `iban` (string, optional)
-- `currency` (string, optional) — default `"GBP"`
+### Error Response Format
 
-**Example:**
 ```json
 {
-  "id": "BANK-001",
-  "account_code": "1000",
-  "bank_name": "Barclays",
-  "account_name": "Business Current Account",
-  "sort_code": "20-00-00",
-  "account_number": "12345678",
-  "currency": "GBP"
+  "status": "ERROR",
+  "error_code": "PERIOD_CLOSED",
+  "message": "Period 2026-01 is HARD_CLOSE. No further transactions can be posted to this period."
 }
 ```
 
-**Response:** The created bank account row.
+### Error Code Reference
+
+| Error Code | Meaning | Luca's Action |
+|---|---|---|
+| `PERIOD_CLOSED` | The transaction date falls in a closed period | Inform the user. Ask if they want to post to the open period instead, or use a PRIOR_PERIOD_ADJUSTMENT. Do not post without instruction. |
+| `PERIOD_SOFT_CLOSE` | Period is in soft-close — only adjustments permitted | Inform the user. Ask if this is a month-end adjustment or if a different date should be used. |
+| `VALIDATION_ERROR` | The payload failed validation | Report the specific validation message. Common causes: debits ≠ credits on a journal, missing required field, invalid account code, invalid tax code. Fix the payload and retry. |
+| `DUPLICATE_IDEMPOTENCY_KEY` | This idempotency key has already been used | The transaction was already posted. Retrieve the original transaction ID using `gl_query_journal` with the reference. Do not re-post. |
+| `INVALID_ACCOUNT` | Account code does not exist or is inactive | Use `gl_list_accounts` to find the correct code. |
+| `COUNTERPARTY_NOT_FOUND` | The trading account or contact ID was not found | Post without the counterparty reference and include the name in the description field. Inform the user that the counterparty record may need to be created. |
+| `INSUFFICIENT_PERMISSIONS` | The MCP user does not have permission for this operation | Inform the user. This requires an administrator to adjust the MCP user's permissions. |
+| `CHAIN_INTEGRITY_ERROR` | A hash chain verification failed | This is a serious data integrity issue. Stop all posting immediately. Inform the user and recommend contacting technical support. |
+| `INTERNAL_ERROR` | Unexpected server error | Inform the user. If it persists, the Luca's General Ledger Docker instance may need to be restarted. |
+| `TIMEOUT` | The MCP call did not respond within the expected time | Wait 30 seconds and retry once. If it fails again, inform the user that the ledger service may be unavailable. |
+
+### On Retry Safety
+
+The `idempotency_key` field on `gl_post_transaction` makes retries safe. If Luca retries a failed posting, it must use the same idempotency key as the original attempt. If the original posting succeeded but the response was not received (e.g. a timeout), the retry will return `DUPLICATE_IDEMPOTENCY_KEY` — which is the correct and safe outcome. Luca should then retrieve the original transaction to confirm it was posted.
+
+### In Batch Mode
+
+When a posting fails during a scheduled batch run, Luca must:
+1. Record the failure with the document name, error code, and error message
+2. Move the document to the `flagged/` sub-folder within the inbox (not the processed folder)
+3. Continue processing remaining documents
+4. Include all failures prominently in the morning summary report
+
+Luca must never silently drop a document because of a posting error.
 
 ---
 
-### gl_import_bank_statement
-Import a bank statement into the system. Supports CSV (with configurable column mapping) and
-JSON formats. Automatically detects and skips duplicate lines.
+## Watched Inbox Folders and Processed Folder Convention
 
-**Parameters:**
-- `bank_account_id` (string, required) — registered bank account ID
-- `format` (string, required) — `"CSV"` or `"JSON"`
-- `csv_content` (string, optional) — raw CSV text (required for CSV format)
-- `column_mapping` (object, optional) — maps CSV headers to fields: `{ date, description, debit, credit, reference, balance }`
-- `lines` (array, optional) — pre-parsed lines (required for JSON format)
+### Inbox Folders
 
-**Example (CSV):**
-```json
-{
-  "bank_account_id": "BANK-001",
-  "format": "CSV",
-  "csv_content": "Date,Description,Debit,Credit,Balance\n04/03/2026,BACS PAYMENT,500.00,,14920.50",
-  "column_mapping": {
-    "date": "Date",
-    "description": "Description",
-    "debit": "Debit",
-    "credit": "Credit",
-    "balance": "Balance"
-  }
-}
+Luca monitors these folders during scheduled batch runs. Users can also drop files here manually for Luca to pick up on the next run or when asked.
+
+| Folder | Contents |
+|---|---|
+| `lucas-general-ledger-inbox/purchase-invoices/` | Supplier invoices, bills, purchase orders (for confirmation only) |
+| `lucas-general-ledger-inbox/sales-invoices/` | Sales invoices issued by the business |
+| `lucas-general-ledger-inbox/bank-statements/` | Bank statements in any format |
+| `lucas-general-ledger-inbox/other/` | Expense receipts, credit notes, payroll summaries, anything else |
+
+The actual paths are configured in `business-profile.json` (see below). The values above are the defaults.
+
+### Processed Folder Convention
+
+After successful processing, files are moved to:
+
+```
+lucas-general-ledger-processed/[type]/[YYYY-MM-DD]/[original-filename]
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "batch_id": "STMT-BATCH-001",
-    "imported_lines": 42,
-    "duplicate_lines": 3
-  }
-}
+Examples:
+- `lucas-general-ledger-processed/purchase-invoices/2026-03-15/acme-corp-INV-00441.pdf`
+- `lucas-general-ledger-processed/bank-statements/2026-03-15/hsbc-march-2026.csv`
+
+### Flagged Files
+
+Files Luca cannot process (unreadable, ambiguous, posting failed) are moved to:
+
 ```
+lucas-general-ledger-inbox/[type]/flagged/[original-filename]
+```
+
+These are included in the morning summary report with a description of the problem.
+
+### File Format Handling
+
+Luca accepts files in any format in the inbox. See `references/file-handling.md` for format-specific intake procedures. Once structured data is extracted, all downstream posting workflows are identical regardless of input format.
 
 ---
 
-### gl_reconcile_bank_account
-Run automatic matching for all unmatched bank statement lines against GL transactions. Uses
-reference, amount, and date matching strategies.
+## `business-profile.json` Structure
 
-**Parameters:**
-- `bank_account_id` (string, required)
-- `date_from` (string, optional) — ISO 8601 date
-- `date_to` (string, optional) — ISO 8601 date
-- `auto_confirm_high_confidence` (boolean, optional) — if `true`, automatically confirms matches
-  with confidence >= 95%
+Luca's General Ledger writes this file at setup time. Luca reads it on every activation to personalise behaviour to the specific business. It is stored in the root of the Luca's General Ledger installation.
 
-**Example:**
 ```json
 {
-  "bank_account_id": "BANK-001",
-  "auto_confirm_high_confidence": true
-}
-```
+  // ─── Business Identity ───────────────────────────────────────────────────────
+  "business_name": "Acme Trading Ltd",
+  // Full legal name as registered
 
-**Response:** `ReconciliationResult` — counts of matched/unmatched lines, details of each suggested match.
+  "legal_structure": "limited_company",
+  // One of: sole_trader | limited_company | partnership | llc | s_corp | c_corp | other
 
----
+  "registration_number": "12345678",
+  // Companies House number (UK), EIN (US), or equivalent
 
-### gl_confirm_bank_match
-Confirm a suggested bank statement match. Marks the statement line as CONFIRMED.
-
-**Parameters:**
-- `statement_line_id` (string, required)
-- `transaction_id` (string, required) — the GL transaction this line matches
-- `notes` (string, optional)
-
-**Example:**
-```json
-{
-  "statement_line_id": "STMT-LINE-0042",
-  "transaction_id": "TXN-2026-03-00019",
-  "notes": "Matched manually — reference format differs"
-}
-```
-
-**Response:** `{ confirmed: true }`
-
----
-
-### gl_post_and_match_bank_line
-Create a new GL transaction from an unmatched bank line and mark it as reconciled.
-Useful for bank charges, direct debits, and other items that have no existing GL transaction.
-
-**Parameters:**
-- `statement_line_id` (string, required)
-- `transaction_type` (string, required) — e.g. `"BANK_PAYMENT"`, `"BANK_RECEIPT"`
-- `description` (string, required)
-- `account_code` (string, optional) — GL account to post to (other side from bank)
-- `counterparty` (object, optional) — `{ name, reference }`
-
-**Example:**
-```json
-{
-  "statement_line_id": "STMT-LINE-0051",
-  "transaction_type": "BANK_PAYMENT",
-  "description": "Barclays bank charges March 2026",
-  "account_code": "7100"
-}
-```
-
-**Response:** `{ transaction_id: "TXN-2026-03-00055", match_status: "CONFIRMED" }`
-
----
-
-### gl_exclude_bank_line
-Exclude a bank statement line from reconciliation. Use for internal transfers already recorded
-elsewhere, or items deliberately not posted to the GL.
-
-**Parameters:**
-- `statement_line_id` (string, required)
-- `reason` (string, required) — explanation for the exclusion
-
-**Example:**
-```json
-{
-  "statement_line_id": "STMT-LINE-0060",
-  "reason": "Internal transfer between current and deposit accounts — already recorded as TRANSFER"
-}
-```
-
-**Response:** `{ excluded: true }`
-
----
-
-### gl_get_reconciliation_status
-Get the reconciliation status summary for a bank account: matched, confirmed, excluded, and
-unmatched counts; GL balance vs statement balance; difference.
-
-**Parameters:**
-- `bank_account_id` (string, required)
-- `date_from` (string, optional) — ISO 8601 date
-- `date_to` (string, optional) — ISO 8601 date
-
-**Example:**
-```json
-{
-  "bank_account_id": "BANK-001",
-  "date_from": "2026-03-01",
-  "date_to": "2026-03-31"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "total_lines": 84,
-    "matched": 71,
-    "confirmed": 65,
-    "excluded": 3,
-    "unmatched": 10,
-    "gl_balance": 18750.50,
-    "statement_balance": 18750.50,
-    "difference": 0.00
-  }
-}
-```
-
----
-
-## Document Inbox Tools
-
-### gl_configure_inbox
-Configure the document inbox watch directory and settings.
-
-**Parameters:**
-- `watch_directory` (string, required) — absolute path to the folder to watch
-- `archive_directory` (string, optional) — where processed documents are moved
-- `allowed_extensions` (array, optional) — default `[".pdf", ".jpg", ".png"]`
-- `max_file_size_mb` (number, optional) — default `10`
-
-**Example:**
-```json
-{
-  "watch_directory": "/data/inbox",
-  "archive_directory": "/data/archive",
-  "allowed_extensions": [".pdf", ".jpg", ".png", ".jpeg"],
-  "max_file_size_mb": 25
-}
-```
-
-**Response:** `void` (success/error only)
-
----
-
-### gl_scan_inbox
-Scan the inbox directory for new documents and add them to the processing queue.
-
-**Parameters:** none
-
-**Example:**
-```json
-{}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "new_files": 5,
-    "total_pending": 8,
-    "directory": "/data/inbox"
-  }
-}
-```
-
----
-
-### gl_get_pending_documents
-Get a list of pending documents waiting to be processed.
-
-**Parameters:**
-- `limit` (number, optional) — maximum number of documents to return
-
-**Example:**
-```json
-{
-  "limit": 20
-}
-```
-
-**Response:** Array of `InboxDocument` — `{ id, filename, path, status, size_bytes, detected_at }`
-
----
-
-### gl_complete_document_processing
-Mark a document as successfully processed and record what was done with it.
-
-**Parameters:**
-- `document_id` (string, required)
-- `document_type` (string, required) — e.g. `"SUPPLIER_INVOICE"`, `"BANK_STATEMENT"`
-- `transaction_id` (string, optional) — the GL transaction created from this document
-- `staging_id` (string, optional) — if the transaction went to staging
-- `extracted_data` (object, optional) — key-value map of data extracted from the document
-- `processing_notes` (string, required) — brief description of what was done
-
-**Example:**
-```json
-{
-  "document_id": "DOC-0042",
-  "document_type": "SUPPLIER_INVOICE",
-  "transaction_id": "TXN-2026-04-00005",
-  "extracted_data": {
-    "supplier": "Acme Corp",
-    "invoice_number": "INV-001",
-    "amount": 1200.00
-  },
-  "processing_notes": "Supplier invoice — posted to 6400 Office Supplies"
-}
-```
-
-**Response:** `void`
-
----
-
-### gl_fail_document_processing
-Mark a document as failed to process, recording the error message.
-
-**Parameters:**
-- `document_id` (string, required)
-- `error_message` (string, required) — description of why processing failed
-
-**Example:**
-```json
-{
-  "document_id": "DOC-0043",
-  "error_message": "Could not extract data — image too blurry to read"
-}
-```
-
-**Response:** `void`
-
----
-
-### gl_get_inbox_status
-Get a summary of the inbox status: counts by status, watch directory, and active state.
-
-**Parameters:** none
-
-**Example:**
-```json
-{}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "counts": {
-      "pending": 3,
-      "processing": 0,
-      "completed": 127,
-      "failed": 2
-    },
-    "watch_directory": "/data/inbox",
-    "active": true
-  }
-}
-```
-
----
-
-## Setup Tools
-
-### gl_get_setup_status
-Check whether the General Ledger has been configured: business profile, chart of accounts,
-opening balances, and current period.
-
-**Parameters:** none
-
-**Example:**
-```json
-{}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "is_configured": true,
-    "has_business_profile": true,
-    "has_chart_of_accounts": true,
-    "has_opening_balances": true,
-    "current_period": "2026-04"
-  }
-}
-```
-
----
-
-### gl_import_chart_of_accounts
-Import a chart of accounts from a CSV export of Xero, Sage, QuickBooks, or a generic format.
-Creates new accounts and updates existing ones.
-
-**Parameters:**
-- `csv_content` (string, required) — raw CSV text
-- `source_system` (string, required) — `"XERO"` | `"SAGE"` | `"QUICKBOOKS"` | `"GENERIC"`
-- `replace_existing` (boolean, optional) — if `true`, deactivates accounts not in the import
-
-**Example:**
-```json
-{
-  "csv_content": "Code,Name,Type\n1000,Bank,ASSET\n4000,Sales,REVENUE",
-  "source_system": "XERO",
-  "replace_existing": false
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "imported": 45,
-    "updated": 3,
-    "deactivated": 0,
-    "errors": []
-  }
-}
-```
-
----
-
-### gl_post_opening_balances
-Post opening balances as a manual journal to initialise the General Ledger. Debits must equal
-credits.
-
-**Parameters:**
-- `balances` (array, required) — `[{ account_code, debit, credit }]`
-- `effective_date` (string, required) — ISO 8601 date of the opening balance
-- `description` (string, optional) — default: `"Opening balances"`
-
-**Example:**
-```json
-{
-  "balances": [
-    { "account_code": "1000", "debit": 15420.50, "credit": 0 },
-    { "account_code": "1100", "debit": 8200.00, "credit": 0 },
-    { "account_code": "2000", "debit": 0, "credit": 3150.00 },
-    { "account_code": "3100", "debit": 0, "credit": 20470.50 }
-  ],
-  "effective_date": "2026-03-31",
-  "description": "Opening balances as at 31 March 2026"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "transaction_id": "TXN-2026-04-00001",
-    "total_debits": 23620.50,
-    "total_credits": 23620.50
-  }
-}
-```
-
----
-
-### gl_save_business_profile
-Save or update the business profile (company name, VAT registration, financial year end,
-territory, etc.).
-
-**Parameters:**
-- `company_name` (string, required)
-- `base_currency` (string, optional) — default `"GBP"`
-- `financial_year_start_month` (number, optional) — 1-12, e.g. `4` for April
-- `vat_registered` (boolean, optional)
-- `vat_number` (string, optional) — e.g. `"GB123456789"`
-- `vat_scheme` (string, optional) — `"STANDARD"` | `"FLAT_RATE"` | `"CASH_ACCOUNTING"`
-- `company_number` (string, optional) — Companies House number
-- `registered_address` (object, optional)
-- `industry` (string, optional)
-- `territory` (string, optional) — e.g. `"GB"`, `"IE"`, `"US"`
-
-**Example:**
-```json
-{
-  "company_name": "Acme Ltd",
   "base_currency": "GBP",
-  "financial_year_start_month": 4,
+  // ISO 4217 currency code — all ledger balances are reported in this currency
+
+  // ─── Territory and Tax ───────────────────────────────────────────────────────
+  "tax_territory": "uk",
+  // One of: uk | us | eu_de | eu_fr | eu_es | eu_it | eu_nl | eu_other | other
+  // Determines which tax reference file Luca loads on activation
+
+  "tax_reference_file": "references/tax/uk.md",
+  // Derived from tax_territory. Luca loads this file on every activation.
+
+  "eu_member_state": null,
+  // ISO 3166-1 alpha-2 country code if tax_territory is eu_*. e.g. "DE", "FR". Null otherwise.
+
   "vat_registered": true,
+  // Boolean — whether the business is registered for VAT / sales tax
+
   "vat_number": "GB123456789",
-  "vat_scheme": "STANDARD",
-  "company_number": "12345678",
-  "territory": "GB"
+  // VAT registration number. Null if not registered.
+
+  "vat_scheme": "standard",
+  // UK: standard | cash | flat_rate. Null for non-UK territories.
+  // standard = invoice-basis VAT, most common
+  // cash = VAT based on when cash is received/paid, not invoice date
+  // flat_rate = fixed flat rate percentage of gross turnover
+
+  "vat_flat_rate_percentage": null,
+  // Required if vat_scheme = flat_rate. The flat rate percentage for this business's trade sector.
+
+  "vat_stagger_group": 1,
+  // UK VAT stagger group: 1, 2, or 3. Null for non-UK.
+  // Group 1: quarters ending March, June, September, December
+  // Group 2: quarters ending April, July, October, January
+  // Group 3: quarters ending May, August, November, February
+
+  "vat_quarter_end_months": [3, 6, 9, 12],
+  // Derived from stagger group — months when VAT quarters end. For display and reminder purposes.
+
+  "postponed_vat_accounting": false,
+  // UK importers only — whether Postponed VAT Accounting (PVA) is in use for import VAT.
+  // If true, Luca uses POSTPONED_VAT tax code for imports rather than treating import VAT
+  // as a cash cost at the border.
+
+  // ─── Accounting Settings ─────────────────────────────────────────────────────
+  "accounting_year_end": "03-31",
+  // MM-DD format. The last day of the accounting year. Default: 03-31 (31 March, common for UK sole traders).
+
+  "accounting_basis": "accruals",
+  // accruals | cash
+  // accruals = transactions recorded when they occur, regardless of when cash moves (standard)
+  // cash = transactions recorded when cash is received or paid
+
+  "nominal_code_structure_version": "1.0",
+  // Version of the chart of accounts structure in use
+
+  // ─── Folder Paths ────────────────────────────────────────────────────────────
+  "inbox_base_path": "lucas-general-ledger-inbox",
+  // Base path for all inbox folders, relative to the user's home directory
+
+  "inbox_purchase_invoices": "lucas-general-ledger-inbox/purchase-invoices",
+  "inbox_sales_invoices": "lucas-general-ledger-inbox/sales-invoices",
+  "inbox_bank_statements": "lucas-general-ledger-inbox/bank-statements",
+  "inbox_other": "lucas-general-ledger-inbox/other",
+
+  "processed_base_path": "lucas-general-ledger-processed",
+  // Base path for processed files
+
+  // ─── Luca Behaviour Settings ─────────────────────────────────────────────────
+  "scheduled_batch_enabled": false,
+  // Whether Luca runs automated batch processing on a schedule
+
+  "batch_run_time": "0 6 * * 1-5",
+  // Cron expression for when the batch run triggers. Default: 6am Monday–Friday.
+  // Null if scheduled_batch_enabled is false.
+
+  "auto_post_confidence_threshold": 0.85,
+  // Transactions with a confidence score at or above this threshold are posted automatically
+  // in batch mode without requiring human approval. Range: 0.0 to 1.0.
+  // Default: 0.85. Lower values increase automation; higher values require more human review.
+  // Recommended starting point: 0.85. Adjust based on experience with your document quality.
+
+  "morning_report_enabled": true,
+  // Whether Luca produces a morning summary report after each batch run
+
+  "morning_report_output_path": "lucas-general-ledger-processed/reports"
+  // Where morning report files are written
 }
 ```
 
-**Response:** `void`
+### How Luca Uses `business-profile.json`
+
+On every activation, Luca reads this file and:
+
+1. Sets the business name for use in reports and confirmations
+2. Loads the tax reference file specified in `tax_reference_file`
+3. Checks `vat_registered` and `vat_scheme` to inform all VAT handling decisions
+4. Uses `vat_stagger_group` and `vat_quarter_end_months` for VAT return timing and reminders
+5. Uses `accounting_year_end` for year-end alerts and report date ranges
+6. Uses `accounting_basis` to correctly treat accruals vs cash transactions
+7. Uses the folder paths for all inbox and processed file operations
+8. Uses `auto_post_confidence_threshold` in batch mode to decide whether to post or stage
+
+If `business-profile.json` is missing or unreadable, Luca must inform the user and ask them to run the Luca's General Ledger setup process before proceeding.
 
 ---
 
-## Batch/Scheduled Run Tools
+## Chart of Accounts — Quick Reference
 
-### gl_start_batch_run
-Start a new batch run. Call this at the beginning of each scheduled or manual batch session.
-Returns the `batch_id` to use for subsequent task recording.
+The authoritative chart of accounts is in the `gl://accounts` resource. The table below is a summary for quick reference during decision-making. Always verify against the live resource when posting.
 
-**Parameters:**
-- `run_type` (string, optional) — e.g. `"OVERNIGHT"`, `"MANUAL"`, `"SCHEDULED"`
+### Assets (1xxx)
 
-**Example:**
-```json
-{
-  "run_type": "OVERNIGHT"
-}
-```
+| Code | Name | Use For |
+|---|---|---|
+| 1000 | Bank Current Account | Main bank — all payments and receipts |
+| 1050 | Bank Deposit Account | Savings / deposit account |
+| 1100 | Trade Debtors | Amounts owed BY customers (auto-posted by CUSTOMER_INVOICE) |
+| 1150 | Other Debtors | Non-trade amounts owed to the company |
+| 1200 | VAT Input Recoverable | VAT paid on purchases (reclaimable) — auto-posted with VAT |
+| 1300 | Stock | Inventory / goods held for resale |
+| 1350 | Goods Received Not Invoiced | Goods received, invoice not yet arrived |
+| 1400 | Prepayments | Expenses paid in advance |
+| 1500 | Fixed Assets Cost | Capital equipment, vehicles, property (cost) |
+| 1510 | Fixed Assets Accum Depn | Accumulated depreciation (credit balance) |
 
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "batch_id": "BATCH-2026-04-04-001",
-    "status": "RUNNING",
-    "started_at": "2026-04-04T02:00:01.000Z"
-  }
-}
-```
+### Liabilities (2xxx)
 
----
+| Code | Name | Use For |
+|---|---|---|
+| 2000 | Trade Creditors | Amounts owed TO suppliers (auto-posted by SUPPLIER_INVOICE) |
+| 2050 | Other Creditors | Non-trade amounts the company owes |
+| 2100 | VAT Output | VAT charged on sales (owed to HMRC) — auto-posted with VAT |
+| 2150 | Accruals | Expenses incurred but not yet invoiced |
+| 2200 | PAYE/NI Payable | Payroll taxes owed to HMRC |
 
-### gl_record_batch_task
-Record the completion of a task within a batch run. Call this after each major step (scan_inbox,
-process_documents, bank_reconciliation, etc.).
+### Equity (3xxx)
 
-**Parameters:**
-- `batch_id` (string, required) — from `gl_start_batch_run`
-- `task` (string, required) — task name, e.g. `"scan_inbox"`, `"process_documents"`, `"bank_reconciliation"`
-- `status` (string, required) — `"SUCCESS"` | `"FAILED"` | `"SKIPPED"`
-- `details` (object, required) — free-form summary of what happened
+| Code | Name | Use For |
+|---|---|---|
+| 3000 | Share Capital | Initial capital invested |
+| 3100 | Retained Earnings | Accumulated profits carried forward |
+| 3200 | Revaluation Reserve | Asset revaluation adjustments |
 
-**Example:**
-```json
-{
-  "batch_id": "BATCH-2026-04-04-001",
-  "task": "scan_inbox",
-  "status": "SUCCESS",
-  "details": {
-    "new_files": 5,
-    "total_pending": 8
-  }
-}
-```
+### Revenue (4xxx)
 
-**Response:** `{ recorded: true }`
+| Code | Name | Use For |
+|---|---|---|
+| 4000 | Sales Revenue Trade | Core product/service sales |
+| 4100 | Sales Revenue Other | Secondary or occasional sales |
+| 4200 | Other Income | Miscellaneous income, scrap, commissions |
 
----
+### Direct Costs (5xxx)
 
-### gl_complete_batch_run
-Mark a batch run as complete with a summary. Call this at the end of every batch session,
-even if some tasks failed.
+| Code | Name | Use For |
+|---|---|---|
+| 5000 | Cost of Goods Sold | COGS journals |
+| 5100 | Purchases Raw Materials | Raw materials, goods for resale, stock purchases |
+| 5200 | Purchase Price Variance | Standard vs actual cost differences |
 
-**Parameters:**
-- `batch_id` (string, required)
-- `summary` (string, required) — human-readable summary of the run
-- `status` (string, optional) — `"SUCCESS"` | `"PARTIAL"` | `"FAILED"` — defaults to `"SUCCESS"`
+### Overheads (6xxx)
 
-**Example:**
-```json
-{
-  "batch_id": "BATCH-2026-04-04-001",
-  "summary": "Processed 5 inbox documents, reconciled 42 bank lines, 3 items need attention.",
-  "status": "PARTIAL"
-}
-```
+| Code | Name | Use For |
+|---|---|---|
+| 6000 | Wages and Salaries | Staff costs, gross pay, employer NI |
+| 6100 | Rent and Rates | Premises rent, business rates, insurance |
+| 6200 | Utilities | Electricity, gas, water |
+| 6300 | Communications | Phone, internet, postage, hosting |
+| 6400 | Office Supplies | Stationery, consumables, small office items |
+| 6500 | Travel and Subsistence | Flights, hotels, taxis, mileage, meals |
+| 6600 | Professional Fees | Accountancy, legal, consultancy, audit |
+| 6700 | Marketing and Advertising | Ads, agencies, events, PR |
+| 6800 | IT and Software | Software subscriptions, IT support, hardware |
 
-**Response:** `{ completed: true }`
+### Finance (7xxx)
+
+| Code | Name | Use For |
+|---|---|---|
+| 7000 | Bank Interest Received | Interest earned on bank balances |
+| 7100 | Bank Charges | Bank fees, card processing charges |
+| 7200 | FX Gains/Losses | Foreign exchange differences |
 
 ---
 
-### gl_get_latest_batch_run
-Get the most recent batch run and its results. Use this at the start of a session to see what
-happened during the last overnight run.
-
-**Parameters:** none
-
-**Example:**
-```json
-{}
-```
-
-**Response:** `BatchRun` object — `{ batch_id, run_type, status, started_at, completed_at, tasks: [...], summary }`.
-If no batch run exists: returns a `NOT_FOUND` error.
-
----
-
-## Additional Phase 2 Tools
-
-### gl_get_profit_and_loss
-Get the Profit and Loss report for an accounting period.
-
-**Parameters:**
-- `period_id` (string, required)
-
-**Response:** P&L report — revenue accounts, expense accounts, gross profit, net profit.
-
----
-
-### gl_get_balance_sheet
-Get the Balance Sheet as at a specific period or date.
-
-**Parameters:**
-- `period_id` (string, required)
-
-**Response:** Balance sheet — assets, liabilities, equity.
-
----
-
-### gl_get_aged_debtors
-Get the aged debtors report showing outstanding customer balances by age.
-
-**Parameters:**
-- `period_id` (string, optional)
-- `as_at_date` (string, optional)
-
-**Response:** Aged debtors by 0-30, 31-60, 61-90, 90+ days.
-
----
-
-### gl_get_aged_creditors
-Get the aged creditors report showing outstanding supplier balances by age.
-
-**Parameters:** Same as `gl_get_aged_debtors`.
-
----
-
-### gl_get_vat_return
-Get the VAT return figures for a quarterly period.
-
-**Parameters:**
-- `period_id` (string, required)
-
-**Response:** VAT boxes 1-9 in HMRC MTD format.
-
----
-
-### gl_year_end_close
-Execute year-end closing entries to transfer P&L balances to Retained Earnings.
-
-**Parameters:**
-- `period_id` (string, required) — the final period of the financial year
-- `closed_by` (string, required)
-
-**Response:** Year-end journal transaction ID and summary.
-
----
-
-### gl_verify_chain_sequence
-Verify the hash chain integrity across multiple consecutive accounting periods, including
-cross-period links.
-
-**Parameters:**
-- `from_period_id` (string, required)
-- `to_period_id` (string, required)
-
-**Response:** `{ valid: boolean, periods_checked: number, error?: string }`
-
----
-
-### gl_recover_missing_transactions
-Detect chain entries that are missing from the database mirror and replay them. Run after a
-crash or unexpected shutdown.
-
-**Parameters:**
-- `period_id` (string, required)
-
-**Response:** `{ entries_scanned, entries_recovered, errors }`
-
----
-
-### gl_add_exchange_rate / gl_get_exchange_rate
-Add or look up exchange rates for FX transactions.
-
-**Parameters (add):** `{ currency_from, currency_to, rate, effective_date }`
-**Parameters (get):** `{ currency_from, currency_to, date }`
+*ledger-formats.md — references file for Luca's General Ledger CFO skill*
+*Read on every activation. Part of the Luca's General Ledger open source project.*
