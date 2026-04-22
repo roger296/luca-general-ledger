@@ -1,7 +1,7 @@
 {
-  "name": "gl-mvp",
-  "version": "0.1.0",
-  "description": "General Ledger MVP — Modular Accounting Platform",
+  "name": "luca-general-ledger",
+  "version": "0.5.0",
+  "description": "AI-driven general ledger with cryptographic audit trail",
   "private": true,
   "scripts": {
     "build": "tsc",
