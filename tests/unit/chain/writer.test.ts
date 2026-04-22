@@ -21,6 +21,11 @@ let tmpDir: string;
 /** Recursively make all files in a directory writable (needed for cleanup after
  * sealPeriod tests, which make chain files read-only). */
 async function makeWritable(dir: string): Promise<void> {
+  try {
+    await fs.chmod(dir, 0o777);
+  } catch {
+    return;
+  }
   let entries: import('node:fs').Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
@@ -30,7 +35,7 @@ async function makeWritable(dir: string): Promise<void> {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     try {
-      await fs.chmod(full, 0o666);
+      await fs.chmod(full, entry.isDirectory() ? 0o777 : 0o666);
     } catch {
       // best-effort
     }
@@ -134,7 +139,7 @@ describe('createPeriodFile', () => {
 
   it('creates the chain directory if it does not exist', async () => {
     const nestedDir = path.join(tmpDir, 'nested', 'chains', 'default');
-    const writer = new ChainWriter({ chainDir: nestedDir });
+    const writer = new ChainWriter({ chainDir: nestedDir, getPeriodStatus: () => Promise.resolve('OPEN') });
     await expect(
       writer.createPeriodFile('2026-03', null, EMPTY_BALANCES),
     ).resolves.toBeDefined();

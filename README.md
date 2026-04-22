@@ -6,7 +6,6 @@
 ![Node](https://img.shields.io/badge/Node-20-green?logo=node.js)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue?logo=postgresql)
 ![Docker](https://img.shields.io/badge/Docker-ready-blue?logo=docker)
-![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Tests](https://img.shields.io/badge/Tests-520%20passing-brightgreen)
 
 ---
@@ -22,7 +21,7 @@ Luca is an AI-driven general ledger built for small and medium businesses who wa
 **Prerequisites:** A fresh Ubuntu 22.04/24.04 or Debian 11/12 VPS with your domain already pointing at its IP address.
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/roger296/luca-general-ledger/main/install.sh \
+curl -sSL https://raw.githubusercontent.com/roger296/lucaV0.5/main/install.sh \
   -o /tmp/luca-install.sh && sudo bash /tmp/luca-install.sh
 ```
 
@@ -45,8 +44,8 @@ When complete, open your browser to `https://your-domain` and log in with the cr
 ## Quick Start — Local Development
 
 ```bash
-git clone https://github.com/roger296/luca-general-ledger.git
-cd luca-general-ledger
+git clone https://github.com/roger296/lucaV0.5.git
+cd lucaV0.5
 cp .env.example .env          # edit with your values
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 npm install
@@ -207,23 +206,16 @@ Copy `.env.example` to `.env` and fill in the required values before running.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature-name`
-3. Make your changes, ensuring all tests pass: `npm test`
-4. Submit a pull request against `main`
-
-Please follow the existing code style (TypeScript strict mode, explicit types, `Decimal.js` for money) and include tests for any new functionality.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on setting up a development environment, coding standards, and submitting pull requests.
 
 ---
 
 ## Security
 
-For security vulnerabilities, please email **security@lucaledger.com** directly rather than opening a public GitHub issue. Include a description of the issue and steps to reproduce. We aim to respond within 48 hours.
-
-Do not share details of unpatched vulnerabilities publicly until a fix has been released.
+See [SECURITY.md](SECURITY.md) for our vulnerability reporting policy. Please report security issues privately rather than opening a public GitHub issue.
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+A custom open-source license will be added shortly. See the repository for updates.

@@ -5,10 +5,10 @@
 # Run as root or with sudo.
 #
 # Usage (recommended — saves script first so stdin is free for prompts):
-#   curl -sSL https://raw.githubusercontent.com/roger296/luca-general-ledger/main/install.sh -o /tmp/luca-install.sh && bash /tmp/luca-install.sh
+#   curl -sSL https://raw.githubusercontent.com/roger296/lucaV0.5/main/install.sh -o /tmp/luca-install.sh && bash /tmp/luca-install.sh
 #
 # Or pipe directly (also works — reads prompts from /dev/tty):
-#   curl -sSL https://raw.githubusercontent.com/roger296/luca-general-ledger/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/roger296/lucaV0.5/main/install.sh | bash
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -219,7 +219,7 @@ if [ -d "$INSTALL_DIR" ]; then
     fi
 fi
 
-git clone https://github.com/roger296/luca-general-ledger.git "$INSTALL_DIR" --quiet
+git clone https://github.com/roger296/lucaV0.5.git "$INSTALL_DIR" --quiet
 success "Application downloaded to $INSTALL_DIR"
 
 mkdir -p "$INSTALL_DIR/logs"

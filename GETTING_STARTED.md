@@ -1,6 +1,6 @@
-# Getting Started — GL MVP Development with Claude Code (Windows)
+# Getting Started — Luca General Ledger Development with Claude Code (Windows)
 
-This guide walks you through setting up the project and using Claude Code to build the General Ledger MVP. All instructions are for Windows and use GUI actions wherever possible. Command-line steps are only included when there is no GUI alternative.
+This guide walks you through setting up the project and using Claude Code to build the Luca General Ledger. All instructions are for Windows and use GUI actions wherever possible. Command-line steps are only included when there is no GUI alternative.
 
 
 ## Prerequisites
@@ -30,20 +30,20 @@ Go to https://desktop.github.com/ and download GitHub Desktop. This gives you a 
 
 ## Step 1: Copy the Project Files
 
-The `gl-mvp` folder has been provided for you with all the starter files. Copy this entire folder to somewhere sensible on your computer — for example, your Documents folder so that it lives at:
+Clone the repository to somewhere sensible on your computer — for example, your Documents folder:
 
-```
-C:\Users\YourName\Documents\gl-mvp
+```bash
+git clone https://github.com/roger296/lucaV0.5.git
 ```
 
-You can put it anywhere you like, but remember where it is.
+This creates a `lucaV0.5` folder with all the project files. You can move it anywhere you like, but remember where it is.
 
 
 ## Step 2: Install the JavaScript Dependencies
 
 This is the one step that requires a command prompt. The reason is that `npm install` reads the `package.json` file in the project and downloads all the libraries the project depends on. There is no GUI for this.
 
-1. Open the `gl-mvp` folder in File Explorer.
+1. Open the `lucaV0.5` folder in File Explorer.
 2. Click in the address bar at the top of the File Explorer window (where it shows the folder path).
 3. Type `powershell` and press Enter. This opens a PowerShell window already pointed at your project folder.
 4. Type the following and press Enter:
@@ -63,22 +63,22 @@ This is all done through GitHub Desktop — no command line needed.
 
 1. Open **GitHub Desktop**.
 2. Go to **File → Add Local Repository**.
-3. Browse to your `gl-mvp` folder and select it.
+3. Browse to your `lucaV0.5` folder and select it.
 4. GitHub Desktop will say "This directory does not appear to be a Git repository." Click **create a repository** (the blue link in that message).
 5. In the dialog that appears:
-   - **Name**: `gl-mvp` (should be pre-filled)
-   - **Local Path**: should show your gl-mvp folder
+   - **Name**: `lucaV0.5` (should be pre-filled)
+   - **Local Path**: should show your lucaV0.5 folder
    - **Initialize this repository with a README**: leave this **unticked** (you already have files)
    - **Git Ignore**: select **Node** from the dropdown
    - Click **Create Repository**
 6. You'll now see all your project files listed as changes. In the bottom-left, type a commit message: `Initial project scaffold with CLAUDE.md and configuration`
 7. Click **Commit to main**.
 8. Now click **Publish repository** (the blue button at the top). In the dialog:
-   - **Name**: `gl-mvp`
+   - **Name**: `lucaV0.5`
    - **Keep this code private**: tick this box
    - Click **Publish Repository**
 
-Your code is now on GitHub. You can verify by going to https://github.com/YOUR_USERNAME/gl-mvp in your browser.
+Your code is now on GitHub. You can verify by going to https://github.com/YOUR_USERNAME/lucaV0.5 in your browser.
 
 
 ## Step 4: Start the Databases
@@ -86,7 +86,7 @@ Your code is now on GitHub. You can verify by going to https://github.com/YOUR_U
 The project needs two PostgreSQL databases running — one for development and one for testing. Docker handles this for you.
 
 1. Open **Docker Desktop** and make sure it's running (whale icon in system tray, no error messages).
-2. Open the `gl-mvp` folder in File Explorer.
+2. Open the `lucaV0.5` folder in File Explorer.
 3. Click in the address bar, type `powershell`, press Enter.
 4. Type the following and press Enter:
 
@@ -96,7 +96,7 @@ docker compose up db db-test -d
 
 This downloads the PostgreSQL database image (first time only — about 80MB) and starts two database instances in the background. Wait until you see messages saying both containers have started.
 
-To verify they're running, open **Docker Desktop** and click on **Containers** in the left sidebar. You should see `gl-mvp-db` and `gl-mvp-db-test` both showing a green "Running" status.
+To verify they're running, open **Docker Desktop** and click on **Containers** in the left sidebar. You should see `lucaV0.5-db` and `lucaV0.5-db-test` both showing a green "Running" status.
 
 Leave Docker Desktop running. The databases will keep running in the background until you stop them.
 
@@ -109,7 +109,7 @@ Leave Docker Desktop running. The databases will keep running in the background 
 
 1. Open the **Claude desktop app**.
 2. Flip the switch at the top from **Cowork** to **Claude Code**.
-3. Claude Code will ask you to open a project folder. Navigate to your `gl-mvp` folder and select it.
+3. Claude Code will ask you to open a project folder. Navigate to your `lucaV0.5` folder and select it.
 4. Claude Code will automatically read the CLAUDE.md file and understand the project structure, tech stack, and architectural rules.
 
 You're now ready to start building.
@@ -195,10 +195,10 @@ Once all seven prompts are complete and the Docker stack is running:
 
 **npm install fails with "node is not recognised":** Node.js didn't install correctly or the system PATH wasn't updated. Try closing and reopening the PowerShell window. If that doesn't help, restart your computer.
 
-**GitHub Desktop can't find the repository:** Make sure you're pointing it at the exact `gl-mvp` folder (the one that contains `CLAUDE.md` and `package.json`), not a parent folder or a subfolder.
+**GitHub Desktop can't find the repository:** Make sure you're pointing it at the exact `lucaV0.5` folder (the one that contains `CLAUDE.md` and `package.json`), not a parent folder or a subfolder.
 
 **Claude Code seems confused about the project:** Tell Claude Code: "Read CLAUDE.md and the architecture document in docs/ to understand the project." This resets its understanding of the project structure and rules.
 
-**Tests fail with "connection refused":** The database containers aren't running. Open Docker Desktop and check that `gl-mvp-db` and `gl-mvp-db-test` are both showing green "Running" status. If not, start them.
+**Tests fail with "connection refused":** The database containers aren't running. Open Docker Desktop and check that `lucaV0.5-db` and `lucaV0.5-db-test` are both showing green "Running" status. If not, start them.
 
 **Everything worked yesterday but won't start today:** Docker Desktop may not be running. Check for the whale icon in your system tray. If it's not there, open Docker Desktop from the Start menu and wait for it to finish starting up, then start the database containers.
